@@ -1,5 +1,5 @@
 # Build stage — cross-compile static musl binary
-FROM --platform=$BUILDPLATFORM rust:alpine AS builder
+FROM --platform=$TARGETPLATFORM rust:alpine AS builder
 
 ARG TARGETPLATFORM
 ARG TARGETARCH
