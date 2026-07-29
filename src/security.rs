@@ -12,6 +12,7 @@
 //! - **Invariant**: No request escapes inspection — every HTTP method and
 //!   path is evaluated.
 
+use std::collections::HashMap;
 use std::collections::HashSet;
 use std::path::Path;
 
@@ -160,26 +161,24 @@ impl SecurityFilter {
 
     /// Load rules on top of a named built-in profile.
     pub fn from_file_and_profile(path: Option<&Path>, profile: &SecurityProfile) -> Self {
-        let path = match path {
-            Some(p) => p,
-            None => return Self::for_profile(profile),
+        let mut filter = match path {
+            None => Self::for_profile(profile),
+            Some(path) => match std::fs::read_to_string(path) {
+                Ok(contents) => match toml::from_str::<AllowlistConfig>(&contents) {
+                    Ok(cfg) => Self::from_config(cfg, profile),
+                    Err(e) => {
+                        warn!("Invalid allowlist file {}: {e}", path.display());
+                        Self::for_profile(profile)
+                    }
+                },
+                Err(e) => {
+                    warn!("Cannot read allowlist file {}: {e}", path.display());
+                    Self::for_profile(profile)
+                }
+            },
         };
-
-        let contents = match std::fs::read_to_string(path) {
-            Ok(c) => c,
-            Err(e) => {
-                warn!("Cannot read allowlist file {}: {e}", path.display());
-                return Self::for_profile(profile);
-            }
-        };
-
-        match toml::from_str::<AllowlistConfig>(&contents) {
-            Ok(cfg) => Self::from_config(cfg, profile),
-            Err(e) => {
-                warn!("Invalid allowlist file {}: {e}", path.display());
-                Self::for_profile(profile)
-            }
-        }
+        filter.apply_environment(&std::env::vars().collect());
+        filter
     }
 
     fn from_config(cfg: AllowlistConfig, profile: &SecurityProfile) -> Self {
@@ -202,6 +201,37 @@ impl SecurityFilter {
         }
 
         filter
+    }
+
+    fn apply_environment(&mut self, env: &HashMap<String, String>) {
+        for name in [
+            "DOCKER_PROXY_ALLOW_ENDPOINTS",
+            "DOCKER_PROXY_INCLUDE_ENDPOINTS",
+        ] {
+            extend_unique(&mut self.allowed_endpoints, split_env_list(env.get(name)));
+        }
+        extend_unique(
+            &mut self.denied_endpoints,
+            split_env_list(env.get("DOCKER_PROXY_DENY_ENDPOINTS")),
+        );
+        extend_unique(
+            &mut self.excluded_endpoints,
+            split_env_list(env.get("DOCKER_PROXY_EXCLUDE_ENDPOINTS")),
+        );
+        for name in ["DOCKER_PROXY_ALLOW_METHODS", "DOCKER_PROXY_INCLUDE_METHODS"] {
+            self.allowed_methods
+                .extend(split_env_list(env.get(name)).into_iter().flatten());
+        }
+        self.denied_methods.extend(
+            split_env_list(env.get("DOCKER_PROXY_DENY_METHODS"))
+                .into_iter()
+                .flatten(),
+        );
+        self.excluded_methods.extend(
+            split_env_list(env.get("DOCKER_PROXY_EXCLUDE_METHODS"))
+                .into_iter()
+                .flatten(),
+        );
     }
 
     // ── Check ─────────────────────────────────────────────────
@@ -270,6 +300,16 @@ fn extend_unique(target: &mut Vec<String>, values: Option<Vec<String>>) {
             target.push(value);
         }
     }
+}
+
+fn split_env_list(value: Option<&String>) -> Option<Vec<String>> {
+    value.map(|raw| {
+        raw.split(',')
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(ToOwned::to_owned)
+            .collect()
+    })
 }
 
 fn extend_set(target: &mut HashSet<String>, values: Option<Vec<String>>) {
@@ -594,5 +634,22 @@ endpoints = ["/containers/*/logs"]
         let f = SecurityFilter::for_profile(&SecurityProfile::ReadOnly);
         assert!(f.check("GET", "/info").is_ok());
         assert!(f.check("POST", "/containers/json").is_err());
+    }
+
+    #[test]
+    fn environment_lists_merge_with_profile() {
+        let mut f = SecurityFilter::for_profile(&SecurityProfile::Default);
+        let env = HashMap::from([
+            (
+                "DOCKER_PROXY_ALLOW_ENDPOINTS".into(),
+                "/images/search".into(),
+            ),
+            ("DOCKER_PROXY_ALLOW_METHODS".into(), "POST".into()),
+            ("DOCKER_PROXY_EXCLUDE_ENDPOINTS".into(), "/info".into()),
+        ]);
+        f.apply_environment(&env);
+        assert!(f.check("POST", "/images/search").is_ok());
+        assert!(f.check("GET", "/info").is_err());
+        assert!(f.check("GET", "/version").is_ok());
     }
 }
