@@ -63,6 +63,18 @@ methods = ["GET"]
 endpoints = ["/containers/*/logs"]
 ```
 
+The same modifiers are available as comma-separated environment variables:
+
+```bash
+DOCKER_PROXY_PROFILE=container-runtime \
+DOCKER_PROXY_INCLUDE_ENDPOINTS=/images/search \
+DOCKER_PROXY_EXCLUDE_ENDPOINTS=/build,/commit \
+DOCKER_PROXY_ALLOW_METHODS=GET,POST \
+docker-socket-proxy
+```
+
+Supported variables are `DOCKER_PROXY_ALLOW_ENDPOINTS`, `DOCKER_PROXY_INCLUDE_ENDPOINTS`, `DOCKER_PROXY_DENY_ENDPOINTS`, `DOCKER_PROXY_EXCLUDE_ENDPOINTS`, and corresponding `*_METHODS` variables. Environment rules are merged after TOML rules; exclusions remain decisive.
+
 ## Security Model
 
 **Default deny** — all endpoints are blocked unless explicitly allowed.
