@@ -1,0 +1,30 @@
+# Base policy for trusted workload orchestrators such as Dagster DockerRunLauncher.
+# Select it with: DOCKER_PROXY_PROFILE=container-runtime
+
+# Add optional read-only or API-specific access to the built-in profile.
+[include]
+endpoints = [
+  "/images/*/json",
+  "/networks/*/json",
+  "/volumes/*",
+]
+methods = ["GET", "HEAD"]
+
+# Add restrictions without replacing the profile defaults.
+# Exclusions always take precedence over allow/include rules.
+[exclude]
+endpoints = [
+  "/commit",
+  "/swarm",
+  "/secrets",
+]
+methods = []
+
+# The common allow/deny names are also additive. Use these for local exceptions.
+[allow]
+endpoints = []
+methods = []
+
+[deny]
+endpoints = []
+methods = []

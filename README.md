@@ -54,6 +54,8 @@ methods = ["POST"]
 
 Rules are merged with the selected profile. `allow` and `deny` are additive aliases matching common Docker socket proxy terminology. Prefer `include` and `exclude` for explicit modifiers; `exclude` always wins and is applied last.
 
+Complete profile example: [`examples/container-runtime.toml`](examples/container-runtime.toml).
+
 ```toml
 [include]
 endpoints = ["/images/*/json"]
