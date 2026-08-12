@@ -153,6 +153,10 @@ impl SecurityFilter {
                     "/build",
                     "/networks/*/connect",
                     "/exec/*/start",
+                    // The exit status and terminal size of an exec the caller
+                    // already created; `docker exec` fails without them.
+                    "/exec/*/json",
+                    "/exec/*/resize",
                 ]
                 .into_iter()
                 .map(str::to_owned),
@@ -528,6 +532,30 @@ mod tests {
         assert!(f.check("POST", "/images/load").is_ok());
         assert!(f.check("POST", "/containers/abc/wait").is_ok());
         assert!(f.check("DELETE", "/containers/abc").is_ok());
+    }
+
+    #[test]
+    fn container_runtime_profile_completes_an_exec() {
+        let f = SecurityFilter::for_profile(&SecurityProfile::ContainerRuntime);
+        assert!(f.check("GET", "/exec/exec-id/json").is_ok(), "exit status");
+        assert!(f.check("POST", "/exec/exec-id/resize").is_ok());
+        assert!(
+            f.check("POST", "/containers/abc/attach").is_err(),
+            "attach stays denied; exec is the supported path"
+        );
+    }
+
+    #[test]
+    fn default_profile_refuses_the_exec_lifecycle() {
+        let f = SecurityFilter::new();
+        for (method, path) in [
+            ("POST", "/containers/abc/exec"),
+            ("POST", "/exec/exec-id/start"),
+            ("GET", "/exec/exec-id/json"),
+            ("POST", "/exec/exec-id/resize"),
+        ] {
+            assert!(f.check(method, path).is_err(), "{method} {path}");
+        }
     }
 
     #[test]
