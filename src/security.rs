@@ -214,18 +214,44 @@ impl SecurityFilter {
         )))
     }
 
-    /// Normalize the path, check it, then validate profile-specific body rules.
-    pub fn check_request(&self, method: &str, path: &str, body: &[u8]) -> SecurityResult {
+    /// Decide from the request head, reporting what the body still owes.
+    ///
+    /// Splitting the decision lets requests whose body carries no policy weight
+    /// stream through instead of being held in memory.
+    pub fn check_head(&self, method: &str, path: &str) -> Result<BodyRule, ProxyError> {
         let path = normalize_path(path)?;
         self.check(method, &path)?;
+
         if matches!(self.profile, SecurityProfile::ContainerRuntime)
             && method == "POST"
             && path == "/containers/create"
         {
-            check_create_body(body)?;
+            return Ok(BodyRule::ContainerCreate);
         }
-        Ok(())
+        Ok(BodyRule::None)
     }
+
+    /// Apply the rule [`Self::check_head`] reported.
+    pub fn check_body(rule: BodyRule, body: &[u8]) -> SecurityResult {
+        match rule {
+            BodyRule::None => Ok(()),
+            BodyRule::ContainerCreate => check_create_body(body),
+        }
+    }
+
+    /// Normalize the path, check it, then validate profile-specific body rules.
+    pub fn check_request(&self, method: &str, path: &str, body: &[u8]) -> SecurityResult {
+        Self::check_body(self.check_head(method, path)?, body)
+    }
+}
+
+/// What a request body owes the decision beyond its head.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BodyRule {
+    /// The head decided it; the body may stream through uninspected.
+    None,
+    /// Container-create constraints apply.
+    ContainerCreate,
 }
 
 impl Default for SecurityFilter {

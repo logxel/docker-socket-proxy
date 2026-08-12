@@ -26,10 +26,12 @@ as a `tower::Layer`. `proxy` is the transport adapter and decides nothing.
 
 **Transport** — Axum server forwarding to the Docker Unix socket, hop-by-hop
 headers stripped in both directions (RFC 9110 §7.6.1), Docker-shaped error
-bodies, graceful shutdown on SIGTERM and SIGINT.
+bodies, graceful shutdown on SIGTERM and SIGINT. Bodies are relayed as they
+arrive, so `/events`, `logs?follow=1`, and `/build` stream.
 
 **Limits** — request bodies bounded by `--max-body-bytes` (413 when exceeded);
-optional `--timeout-secs` deadline, disabled by default.
+a declared over-limit `Content-Length` is refused before any bytes are read.
+Optional `--timeout-secs` deadline, disabled by default.
 
 **Audit** — every denial emits a structured `warn` with method, path, profile,
 and reason (NIST SP 800-53 AU-2/AU-3).
@@ -48,7 +50,7 @@ Identifiers are stable; closed gaps are not renumbered.
 
 | # | Gap | Location |
 |---|-----|----------|
-| 11 | Bodies are fully buffered and `upgrade`/`connection` are stripped from responses, so streaming (`/events`, `logs?follow=1`, `/build`) and 101-upgrade endpoints (`/exec/*/start`, `attach`) cannot work, though `container-runtime` permits them | `src/proxy.rs` |
+| 11 | `upgrade`/`connection` are stripped from responses, so 101-upgrade endpoints (`/exec/*/start`, `attach`) cannot work, though `container-runtime` permits them. Streaming itself now works | `src/proxy.rs` |
 | 12 | No authentication of any kind on the listening port (OWASP API2) | `src/proxy.rs` |
 | 15 | No `/metrics` or health endpoint | `src/proxy.rs` |
 | 16 | No compatibility shim for the Tecnativa/linuxserver environment variables | `src/policy.rs` |

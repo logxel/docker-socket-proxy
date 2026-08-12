@@ -32,6 +32,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - OCI image labels and a digest-pinned builder base.
 
 ### Changed
+- **Request and response bodies now stream.** `/events`,
+  `/containers/{id}/logs?follow=1`, and `/build` output are relayed frame by
+  frame instead of being collected first — endpoints that never end previously
+  returned nothing at all. Only bodies a policy rule actually inspects are
+  buffered.
+- **Policy is now evaluated before the request body is read.** A blocked
+  endpoint answers `403` without consuming the upload; it previously buffered
+  the body first and could answer `413` for a request it was going to refuse
+  anyway.
+- A `Content-Length` above `--max-body-bytes` is refused before any bytes are
+  read, rather than after the limit trips mid-transfer.
 - **Policy is split into decision, administration, and enforcement.**
   `security` decides and is now pure, `policy` owns all policy I/O, and
   `middleware` enforces as a `tower::Layer` instead of a call inside the

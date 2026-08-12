@@ -131,7 +131,7 @@ For profiles that permit `/containers/create`, the request body is inspected and
 
 Tracked in [`STATUS.md`](STATUS.md) with a remediation plan in [`docs/standards.md`](docs/standards.md).
 
-- **Streaming and exec do not work yet.** Request and response bodies are fully buffered, and HTTP connection upgrade (101) is not passed through. This affects `/events`, `/containers/{id}/logs?follow=1`, `/build` output streaming, and `/exec/{id}/start`. The `container-runtime` profile *permits* these endpoints at the policy layer, but the transport cannot currently carry them.
+- **Exec and attach do not work yet.** HTTP connection upgrade (101) is not passed through, so `/exec/{id}/start` and `/containers/{id}/attach` fail even though `container-runtime` permits them at the policy layer. Streaming itself works: `/events`, `/containers/{id}/logs?follow=1`, and `/build` output are relayed as they arrive.
 - **No authentication.** See [Trust Boundary](#trust-boundary).
 - **No `/metrics` or health endpoint.**
 
