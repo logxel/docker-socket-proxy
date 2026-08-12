@@ -1,13 +1,11 @@
 //! Application configuration.
 //!
-//! Configuration is parsed from CLI arguments and environment variables
-//! using `clap`. Every field has a sensible default.
+//! Parsed from CLI arguments and environment variables via `clap`. Every field
+//! has a default.
 //!
 //! # Contract
-//! - **Pre-condition**: `Config::parse()` must succeed; invalid values cause
-//!   the process to exit early with a descriptive message.
-//! - **Post-condition**: Returned `Config` is always valid (no partial state).
-//! - **Invariant**: All paths are `PathBuf`, never raw strings.
+//! - **Post-condition**: A returned `Config` is fully valid; invalid input exits
+//!   the process before the runtime starts rather than yielding partial state.
 
 use std::path::PathBuf;
 
@@ -25,9 +23,7 @@ pub struct Config {
     #[arg(long, env = "DOCKER_SOCKET", default_value = "/var/run/docker.sock")]
     pub socket: PathBuf,
 
-    /// Path to a TOML allowlist configuration file.
-    ///
-    /// When provided, the allowlist overrides built-in defaults.
+    /// Path to a TOML allowlist configuration file, merged over the profile.
     #[arg(long, env = "DOCKER_PROXY_ALLOWLIST")]
     pub allowlist: Option<PathBuf>,
 
@@ -61,8 +57,8 @@ impl Config {
     /// Parse configuration from the environment.
     ///
     /// # Panics
-    /// Panics on invalid CLI input (by design — this is the entry point
-    /// before the async runtime starts, and Fail-Fast applies).
+    /// On invalid CLI input, by design: this runs before the async runtime, so
+    /// Fail-Fast applies.
     pub fn parse() -> Self {
         <Self as Parser>::parse()
     }

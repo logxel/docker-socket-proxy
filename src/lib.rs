@@ -1,7 +1,7 @@
 //! `docker-socket-proxy` — A secure, minimal Docker socket proxy.
 //!
 //! Exposes the Docker API over TCP while filtering dangerous endpoints.
-//! Built on Tokio, Axum, and Bollard.
+//! Built on Tokio and Axum.
 //!
 //! # Architecture
 //!

@@ -18,6 +18,7 @@
 //!                                          Unix socket → Docker
 //! ```
 
+use std::collections::HashSet;
 use std::path::PathBuf;
 
 use axum::Router;
@@ -37,6 +38,18 @@ use crate::config::Config;
 use crate::error::ProxyError;
 use crate::security::SecurityFilter;
 
+/// Headers an intermediary must not forward, per RFC 9110 §7.6.1.
+const HOP_BY_HOP_HEADERS: [&str; 8] = [
+    "connection",
+    "keep-alive",
+    "proxy-authenticate",
+    "proxy-authorization",
+    "te",
+    "trailer",
+    "transfer-encoding",
+    "upgrade",
+];
+
 /// Shared application state passed to every request handler.
 #[derive(Clone)]
 pub struct AppState {
@@ -44,15 +57,33 @@ pub struct AppState {
     security: SecurityFilter,
 }
 
+/// Collect the header names listed in `Connection`.
+///
+/// The list is extensible: a sender may name any header as connection-specific,
+/// and those must be stripped alongside [`HOP_BY_HOP_HEADERS`].
+fn connection_specific_headers(headers: &HeaderMap) -> HashSet<String> {
+    headers
+        .get_all("connection")
+        .iter()
+        .filter_map(|value| value.to_str().ok())
+        .flat_map(|value| value.split(','))
+        .map(|token| token.trim().to_ascii_lowercase())
+        .filter(|token| !token.is_empty())
+        .collect()
+}
+
+/// Whether a header must be dropped when relaying a message across a hop.
+fn is_hop_by_hop(name: &str, connection_specific: &HashSet<String>) -> bool {
+    let lower = name.to_ascii_lowercase();
+    HOP_BY_HOP_HEADERS.contains(&lower.as_str()) || connection_specific.contains(&lower)
+}
+
 /// Build the Axum router with all routes.
 fn build_router(state: AppState) -> Router {
     Router::new().fallback(proxy_handler).with_state(state)
 }
 
-/// Start the proxy server.
-///
-/// Binds to the configured TCP port and runs until a shutdown signal
-/// (SIGTERM or Ctrl+C) is received.
+/// Start the proxy server, serving until a shutdown signal arrives.
 pub async fn serve(config: Config) -> Result<(), ProxyError> {
     let state = AppState {
         docker_socket: config.socket.clone(),
@@ -91,10 +122,8 @@ pub fn test_router(docker_socket: PathBuf, security: SecurityFilter) -> Router {
 
 /// Catch-all proxy handler.
 ///
-/// 1. Extracts method, path, headers, and body from the incoming request.
-/// 2. Runs the security filter.
-/// 3. Forwards the request to the Docker socket via hyperlocal-next.
-/// 4. Returns the Docker response to the client.
+/// # Contract
+/// - **Invariant**: The security filter runs before any upstream contact.
 async fn proxy_handler(
     State(state): State<AppState>,
     method: Method,
@@ -105,10 +134,19 @@ async fn proxy_handler(
     let path = uri.path();
     let query = uri.query().unwrap_or("");
 
-    // ── Security check ────────────────────────────────────────
-    state.security.check_request(method.as_str(), path, &body)?;
+    // Denials are audit records (NIST SP 800-53 AU-2/AU-3); the path is logged
+    // as received, since forensics needs the request rather than its normal form.
+    if let Err(denial) = state.security.check_request(method.as_str(), path, &body) {
+        tracing::warn!(
+            method = %method,
+            path,
+            profile = ?state.security.profile(),
+            reason = %denial,
+            "request denied by security policy"
+        );
+        return Err(denial);
+    }
 
-    // ── Build target URI ──────────────────────────────────────
     let path_and_query = if query.is_empty() {
         path.to_string()
     } else {
@@ -116,25 +154,26 @@ async fn proxy_handler(
     };
     let target_uri: hyper::Uri = Uri::new(&state.docker_socket, &path_and_query).into();
 
-    // ── Build forwarded request ───────────────────────────────
     let mut req_builder = hyper::Request::builder()
         .method(method.as_str())
         .uri(&target_uri);
 
+    // `Host` is supplied by the Unix-socket transport.
+    let client_connection_headers = connection_specific_headers(&headers);
     for (key, value) in headers.iter() {
-        let key_lower = key.as_str().to_lowercase();
-        if key_lower != "host" {
-            req_builder = req_builder.header(key.as_str(), value.as_bytes());
+        let key_lower = key.as_str().to_ascii_lowercase();
+        if key_lower == "host" || is_hop_by_hop(&key_lower, &client_connection_headers) {
+            continue;
         }
+        req_builder = req_builder.header(key.as_str(), value.as_bytes());
     }
 
     let req = req_builder
         .body(Full::new(body))
         .map_err(|e| ProxyError::Internal(format!("failed to build request: {e}")))?;
 
-    // ── Forward via Unix socket ───────────────────────────────
-    // Docker's Unix HTTP server may close keep-alive connections between API
-    // calls. Avoid reusing a stale pooled socket for the next request.
+    // Docker's Unix HTTP server may close keep-alive connections between calls,
+    // so a pooled socket can be stale by the time it is reused.
     let client: Client<UnixConnector, Full<Bytes>> = Client::builder(TokioExecutor::new())
         .pool_max_idle_per_host(0)
         .build(UnixConnector);
@@ -144,24 +183,14 @@ async fn proxy_handler(
     })?;
     tracing::debug!(status = %resp.status(), path, "Docker upstream response received");
 
-    // ── Convert response ──────────────────────────────────────
     let status =
         StatusCode::from_u16(resp.status().as_u16()).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
 
     let mut response_builder = Response::builder().status(status);
 
+    let upstream_connection_headers = connection_specific_headers(resp.headers());
     for (key, value) in resp.headers() {
-        if matches!(
-            key.as_str(),
-            "connection"
-                | "keep-alive"
-                | "proxy-authenticate"
-                | "proxy-authorization"
-                | "te"
-                | "trailer"
-                | "transfer-encoding"
-                | "upgrade"
-        ) {
+        if is_hop_by_hop(key.as_str(), &upstream_connection_headers) {
             continue;
         }
         if let Ok(v) = value.to_str() {
@@ -183,14 +212,96 @@ async fn proxy_handler(
         .map_err(|e| ProxyError::Internal(format!("failed to build response: {e}")))
 }
 
-/// Wait for a shutdown signal (SIGTERM or Ctrl+C).
+/// Wait for a shutdown signal (SIGTERM or SIGINT).
+///
+/// SIGTERM is what `docker stop` and Kubernetes send. A branch whose handler
+/// fails to install parks forever rather than resolving, so a failed handler
+/// cannot present itself as a shutdown request.
 async fn shutdown_signal() {
-    match tokio::signal::ctrl_c().await {
-        Ok(()) => {
-            info!("Shutdown signal received, draining connections…");
+    let interrupt = async {
+        if let Err(e) = tokio::signal::ctrl_c().await {
+            tracing::error!(error = %e, "failed to install SIGINT handler");
+            std::future::pending::<()>().await;
         }
-        Err(e) => {
-            tracing::error!("Failed to install Ctrl+C handler: {e}. ");
+    };
+
+    #[cfg(unix)]
+    let terminate = async {
+        use tokio::signal::unix::{SignalKind, signal};
+        match signal(SignalKind::terminate()) {
+            Ok(mut stream) => {
+                stream.recv().await;
+            }
+            Err(e) => {
+                tracing::error!(error = %e, "failed to install SIGTERM handler");
+                std::future::pending::<()>().await;
+            }
         }
+    };
+
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+
+    tokio::select! {
+        () = interrupt => info!(signal = "SIGINT", "Shutdown signal received, draining connections…"),
+        () = terminate => info!(signal = "SIGTERM", "Shutdown signal received, draining connections…"),
+    }
+}
+
+// ── Tests ──────────────────────────────────────────────────────
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod tests {
+    use super::*;
+    use axum::http::HeaderValue;
+
+    fn headers(pairs: &[(&str, &str)]) -> HeaderMap {
+        let mut map = HeaderMap::new();
+        for (name, value) in pairs {
+            map.append(
+                axum::http::HeaderName::from_bytes(name.as_bytes()).unwrap(),
+                HeaderValue::from_str(value).unwrap(),
+            );
+        }
+        map
+    }
+
+    #[test]
+    fn strips_well_known_hop_by_hop_headers() {
+        let listed = connection_specific_headers(&HeaderMap::new());
+        for name in HOP_BY_HOP_HEADERS {
+            assert!(is_hop_by_hop(name, &listed), "{name} should be stripped");
+        }
+        assert!(!is_hop_by_hop("content-type", &listed));
+    }
+
+    #[test]
+    fn strips_headers_named_by_connection() {
+        let map = headers(&[("connection", "keep-alive, X-Secret")]);
+        let listed = connection_specific_headers(&map);
+        assert!(is_hop_by_hop("x-secret", &listed));
+        assert!(
+            is_hop_by_hop("X-Secret", &listed),
+            "match is ASCII-case-insensitive"
+        );
+        assert!(!is_hop_by_hop("x-public", &listed));
+    }
+
+    #[test]
+    fn collects_tokens_across_repeated_connection_headers() {
+        let map = headers(&[("connection", "X-One"), ("connection", "X-Two , X-Three")]);
+        let listed = connection_specific_headers(&map);
+        for name in ["x-one", "x-two", "x-three"] {
+            assert!(is_hop_by_hop(name, &listed), "{name} should be stripped");
+        }
+    }
+
+    #[test]
+    fn ignores_empty_connection_tokens() {
+        let map = headers(&[("connection", "close,,  ,")]);
+        let listed = connection_specific_headers(&map);
+        assert!(listed.contains("close"));
+        assert_eq!(listed.len(), 1);
     }
 }
