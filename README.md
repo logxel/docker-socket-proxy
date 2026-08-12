@@ -11,15 +11,19 @@ A secure, minimal Docker socket proxy written in Rust. Exposes the Docker API ov
 ```bash
 docker run -d \
   --name docker-socket-proxy \
-  -p 2375:2375 \
-  -v /var/run/docker.sock:/var/run/docker.sock:ro \
+  -p 127.0.0.1:2375:2375 \
+  -v /var/run/docker.sock:/var/run/docker.sock \
   ghcr.io/grupo-farinter-oss/docker-socket-proxy:latest
 ```
+
+> **Bind to a private interface.** The proxy has no authentication — any client
+> that reaches the port gets whatever the active profile permits. See
+> [Trust Boundary](#trust-boundary).
 
 ### From Source
 
 ```bash
-cargo build --release
+cargo build --release --locked
 ./target/release/docker-socket-proxy --port 2375
 ```
 
@@ -32,6 +36,7 @@ Options:
   --port <PORT>          TCP port to listen on [env: DOCKER_PROXY_PORT] [default: 2375]
   --socket <PATH>        Docker Unix socket path [env: DOCKER_SOCKET] [default: /var/run/docker.sock]
   --allowlist <FILE>     Path to TOML allowlist configuration file
+  --profile <PROFILE>    Built-in profile: default, read-only, container-runtime
   --log-level <LEVEL>    Log level [env: RUST_LOG] [default: info]
   --log-format <FORMAT>  Log format: json, pretty [default: json]
 ```
@@ -81,17 +86,59 @@ Supported variables are `DOCKER_PROXY_ALLOW_ENDPOINTS`, `DOCKER_PROXY_INCLUDE_EN
 
 **Default deny** — all endpoints are blocked unless explicitly allowed.
 
-Allowed by default: read-only endpoints (`/containers/json`, `/images/json`, `/info`, `/version`, etc.)
+Allowed by default: read-only endpoints (`/containers/json`, `/images/json`, `/info`, `/version`, etc.) on GET and HEAD.
 
-Blocked by default: mutation endpoints (`/containers/create`, `/exec`, `/build`, `/commit`), privileged flags, capability additions, device mounts.
+Blocked by default: mutation endpoints (`/containers/create`, `/exec`, `/build`, `/commit`), and everything not explicitly listed.
 
-### Dagster Docker Profile
+### Trust Boundary
 
-Use the opt-in `container-runtime` profile for the complete Docker-backed Dagster workspace. It supports DockerRunLauncher lifecycle calls, KNIME custom containers, image builds and loads, bind/volume mounts, network connections, wait/log/archive operations, and exec sessions. Privileged mode, capability changes, host devices, and namespace overrides remain blocked. Expose this profile only to trusted orchestrator services.
+This proxy **reduces** the blast radius of socket exposure. It does not eliminate it.
+
+- **There is no authentication.** Anyone who can reach the listening port receives everything the active profile permits. Keep the port on a private network or a container-internal bridge.
+- **Mounting the socket `:ro` does nothing for security.** The read-only flag applies to the inode, not the protocol — the socket stays fully bidirectional. This is a widespread misconception; do not rely on it.
+- **`container-runtime` grants real power.** It permits container creation, image builds, and bind mounts. A caller with this profile can, with effort, reach the host. Expose it only to services you already trust.
+
+### Container Runtime Profile
+
+Use the opt-in `container-runtime` profile for Docker-backed orchestrators. It supports `DockerRunLauncher` lifecycle calls, custom containers, image builds and loads, bind/volume mounts, network connections, and wait/log/archive operations. Privileged mode, capability changes, host devices, and namespace overrides remain blocked.
 
 ```bash
 DOCKER_PROXY_PROFILE=container-runtime docker-socket-proxy
 ```
+
+For profiles that permit `/containers/create`, the request body is inspected and rejected if it sets `Privileged`, `CapAdd`, `SecurityOpt`, `Devices`, `PidMode`, `IpcMode`, or `UsernsMode`. Bind and volume mounts are permitted — orchestrators need them, and this profile is trusted-caller-only by design.
+
+## Known Limitations
+
+Tracked in [`STATUS.md`](STATUS.md) with a remediation plan in [`docs/standards.md`](docs/standards.md).
+
+- **Streaming and exec do not work yet.** Request and response bodies are fully buffered, and HTTP connection upgrade (101) is not passed through. This affects `/events`, `/containers/{id}/logs?follow=1`, `/build` output streaming, and `/exec/{id}/start`. The `container-runtime` profile *permits* these endpoints at the policy layer, but the transport cannot currently carry them.
+- **No request timeout or body-size limit.** An unauthenticated client can hold connections open or submit an arbitrarily large body.
+- **Path matching is not RFC 3986-normalized.** Percent-encoded and dot-segment paths are matched literally. The matcher fails closed, so this is a hardening gap rather than a known bypass.
+
+## Auditing
+
+Every denied request emits a structured `warn` event with the method, the path as received, the active profile, and the reason:
+
+```json
+{"level":"WARN","fields":{"message":"request denied by security policy",
+ "method":"POST","path":"/containers/create","profile":"Default",
+ "reason":"access denied: blocked endpoint: POST /containers/create"}}
+```
+
+Error responses follow the Docker Engine API contract, so Docker clients deserialize them with the same type they use for daemon errors:
+
+```json
+{"message": "blocked endpoint: POST /containers/create"}
+```
+
+## Standards
+
+Conformance targets, adoption decisions, and their measured dependency cost are documented in [`docs/standards.md`](docs/standards.md). The target state is described in [`AGENTS.md`](AGENTS.md).
+
+## Contributing
+
+Security issues: see [`SECURITY.md`](SECURITY.md). Release history: [`CHANGELOG.md`](CHANGELOG.md).
 
 ## License
 
