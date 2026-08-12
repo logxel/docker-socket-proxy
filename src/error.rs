@@ -30,6 +30,10 @@ pub enum ProxyError {
     #[error("access denied: {0}")]
     Forbidden(String),
 
+    /// Request body exceeded the configured limit.
+    #[error("payload too large: {0}")]
+    TooLarge(String),
+
     /// Failed to forward the request to the Docker socket.
     #[error("docker socket error: {0}")]
     Docker(String),
@@ -44,6 +48,7 @@ impl IntoResponse for ProxyError {
         let (status, message) = match &self {
             ProxyError::Config(msg) => (StatusCode::BAD_REQUEST, msg.clone()),
             ProxyError::Forbidden(msg) => (StatusCode::FORBIDDEN, msg.clone()),
+            ProxyError::TooLarge(msg) => (StatusCode::PAYLOAD_TOO_LARGE, msg.clone()),
             ProxyError::Docker(msg) => (StatusCode::BAD_GATEWAY, msg.clone()),
             ProxyError::Internal(_) => (StatusCode::INTERNAL_SERVER_ERROR, self.to_string()),
         };

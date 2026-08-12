@@ -31,6 +31,21 @@ pub struct Config {
     #[arg(long, env = "DOCKER_PROXY_PROFILE", default_value = "default")]
     pub profile: SecurityProfile,
 
+    /// Maximum request body size in bytes.
+    ///
+    /// Image build contexts are the large case; raise this where `/build` is
+    /// permitted and used.
+    #[arg(long, env = "DOCKER_PROXY_MAX_BODY_BYTES", default_value = "16777216")]
+    pub max_body_bytes: usize,
+
+    /// Request timeout in seconds; `0` disables it.
+    ///
+    /// Disabled by default because `/containers/{id}/wait` and follow-mode logs
+    /// legitimately block for as long as the workload runs, and a timeout short
+    /// enough to bound an attacker would sever them.
+    #[arg(long, env = "DOCKER_PROXY_TIMEOUT_SECS", default_value = "0")]
+    pub timeout_secs: u64,
+
     /// Log level (trace, debug, info, warn, error).
     #[arg(long, env = "RUST_LOG", default_value = "info")]
     pub log_level: String,
