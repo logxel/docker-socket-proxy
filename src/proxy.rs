@@ -1,25 +1,25 @@
-//! Proxy engine that accepts HTTP requests on TCP and forwards
-//! them to the Docker Unix socket after security filtering.
+//! Transport adapter: accepts HTTP over TCP and relays it to the Docker Unix
+//! socket. Policy lives in [`crate::middleware`] and [`crate::security`].
 //!
 //! # Contract
-//! - **Pre-condition**: A valid `Config` and `SecurityFilter` must be provided.
-//! - **Post-condition**: The proxy binds to the configured TCP port and
-//!   serves requests until a shutdown signal is received.
-//! - **Invariant**: Every request passes through the `SecurityFilter` check
-//!   before reaching the Docker socket.
+//! - **Post-condition**: The proxy binds to the configured TCP port and serves
+//!   until a shutdown signal is received.
+//! - **Invariant**: The handler is reachable only through
+//!   [`crate::middleware::SecurityLayer`], so no request reaches the socket
+//!   unevaluated.
 //!
 //! # Architecture
 //! ```text
-//! Client → TCP :2375 → Axum Router → SecurityFilter.check()
-//!                                         │
-//!                               ┌─ Deny ─┴─ Allow ─┐
-//!                               ▼                   ▼
-//!                             403          hyperlocal-next
-//!                                          Unix socket → Docker
+//! Client → TCP :2375 → Timeout → SecurityLayer (PEP) → proxy_handler
+//!                                      │                     │
+//!                            ┌─ Deny ─┴─ Allow ─┐            ▼
+//!                            ▼                   ▼    hyperlocal-next
+//!                          403/413          (inward)  Unix socket → Docker
 //! ```
 
 use std::collections::HashSet;
 use std::path::PathBuf;
+use std::time::Duration;
 
 use axum::Router;
 use axum::body::Body;
@@ -32,10 +32,13 @@ use hyper_util::client::legacy::Client;
 use hyper_util::rt::TokioExecutor;
 use hyperlocal_next::{UnixConnector, Uri};
 use tokio::net::TcpListener;
+use tower_http::timeout::TimeoutLayer;
 use tracing::info;
 
 use crate::config::Config;
 use crate::error::ProxyError;
+use crate::middleware::SecurityLayer;
+use crate::policy::PolicyLoader;
 use crate::security::SecurityFilter;
 
 /// Headers an intermediary must not forward, per RFC 9110 §7.6.1.
@@ -54,7 +57,6 @@ const HOP_BY_HOP_HEADERS: [&str; 8] = [
 #[derive(Clone)]
 pub struct AppState {
     docker_socket: PathBuf,
-    security: SecurityFilter,
 }
 
 /// Collect the header names listed in `Connection`.
@@ -78,22 +80,39 @@ fn is_hop_by_hop(name: &str, connection_specific: &HashSet<String>) -> bool {
     HOP_BY_HOP_HEADERS.contains(&lower.as_str()) || connection_specific.contains(&lower)
 }
 
-/// Build the Axum router with all routes.
-fn build_router(state: AppState) -> Router {
-    Router::new().fallback(proxy_handler).with_state(state)
+/// Build the router, wrapping the handler in the enforcement layers.
+///
+/// The timeout is outermost so it bounds policy evaluation as well as the
+/// upstream call.
+fn build_router(state: AppState, security: SecurityLayer, timeout: Option<Duration>) -> Router {
+    let router = Router::new()
+        .fallback(proxy_handler)
+        .with_state(state)
+        .layer(security);
+
+    match timeout {
+        // 504 rather than 408: the deadline that expired is ours to the daemon,
+        // not the client's to us.
+        Some(timeout) => router.layer(TimeoutLayer::with_status_code(
+            StatusCode::GATEWAY_TIMEOUT,
+            timeout,
+        )),
+        None => router,
+    }
 }
 
 /// Start the proxy server, serving until a shutdown signal arrives.
 pub async fn serve(config: Config) -> Result<(), ProxyError> {
+    let filter = PolicyLoader::new(config.allowlist.as_deref(), &config.profile).load()?;
     let state = AppState {
         docker_socket: config.socket.clone(),
-        security: SecurityFilter::from_file_and_profile(
-            config.allowlist.as_deref(),
-            &config.profile,
-        ),
     };
 
-    let router = build_router(state);
+    let router = build_router(
+        state,
+        SecurityLayer::new(filter, config.max_body_bytes),
+        (config.timeout_secs > 0).then(|| Duration::from_secs(config.timeout_secs)),
+    );
     let addr = format!("0.0.0.0:{}", config.port);
     let listener = TcpListener::bind(&addr)
         .await
@@ -113,17 +132,18 @@ pub async fn serve(config: Config) -> Result<(), ProxyError> {
 /// Create a router for integration testing.
 #[doc(hidden)]
 pub fn test_router(docker_socket: PathBuf, security: SecurityFilter) -> Router {
-    let state = AppState {
-        docker_socket,
-        security,
-    };
-    build_router(state)
+    build_router(
+        AppState { docker_socket },
+        SecurityLayer::new(security, 1024 * 1024),
+        None,
+    )
 }
 
-/// Catch-all proxy handler.
+/// Forward an already-authorized request to the Docker socket.
 ///
 /// # Contract
-/// - **Invariant**: The security filter runs before any upstream contact.
+/// - **Pre-condition**: [`crate::middleware::SecurityLayer`] has allowed the
+///   request. This handler performs no policy checks of its own.
 async fn proxy_handler(
     State(state): State<AppState>,
     method: Method,
@@ -133,19 +153,6 @@ async fn proxy_handler(
 ) -> Result<Response, ProxyError> {
     let path = uri.path();
     let query = uri.query().unwrap_or("");
-
-    // Denials are audit records (NIST SP 800-53 AU-2/AU-3); the path is logged
-    // as received, since forensics needs the request rather than its normal form.
-    if let Err(denial) = state.security.check_request(method.as_str(), path, &body) {
-        tracing::warn!(
-            method = %method,
-            path,
-            profile = ?state.security.profile(),
-            reason = %denial,
-            "request denied by security policy"
-        );
-        return Err(denial);
-    }
 
     let path_and_query = if query.is_empty() {
         path.to_string()
