@@ -78,7 +78,7 @@ Documentation, CI, and packaging. No effect on the binary.
 | **SLSA v1.0** provenance | `actions/attest-build-provenance`; Build L2 immediately, L3 via reusable workflow |
 | **SPDX / CycloneDX** SBOM | `docker/build-push-action` with `sbom: true`, `provenance: mode=max` |
 | **Sigstore / cosign** | Keyless signing via GitHub OIDC |
-| **OpenSSF Scorecard** | Run in CI; pin all actions by commit SHA (currently tag-pinned) |
+| **OpenSSF Scorecard** | Weekly run publishing to the OpenSSF API, with all actions pinned by commit SHA |
 | **`cargo-deny`** | Replaces bare `cargo-audit` — adds licence policy and banned/duplicate crates |
 | **Reproducible builds** | Pin `rust:alpine` by digest; `cargo build --locked` in CI and Dockerfile |
 
