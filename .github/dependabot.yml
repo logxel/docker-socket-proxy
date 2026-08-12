@@ -1,0 +1,26 @@
+version: 2
+
+updates:
+  # Grouped so routine bumps arrive as one PR rather than a stream.
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      patch-and-minor:
+        update-types:
+          - minor
+          - patch
+
+  # Actions are SHA-pinned; without this, pinning becomes freezing.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: weekly
