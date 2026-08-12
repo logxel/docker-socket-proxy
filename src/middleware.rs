@@ -1,26 +1,30 @@
 //! Policy enforcement point.
 //!
-//! A [`tower::Layer`] that buffers the request body under a size limit, submits
-//! the request to the decision point in [`crate::security`], and either passes
-//! it inward or answers with the denial.
+//! A [`tower::Layer`] that submits each request to the decision point in
+//! [`crate::security`], then either passes it inward or answers with the denial.
+//!
+//! Only bodies the decision actually rests on are buffered; the rest stream
+//! through, which is what lets `/build` and the other large uploads work.
 //!
 //! # Contract
 //! - **Invariant**: The inner service is called only for requests the filter
 //!   allowed.
-//! - **Invariant**: No more than `max_body_bytes` are buffered per request.
+//! - **Invariant**: No more than `max_body_bytes` pass through per request,
+//!   buffered or streamed.
 
 use std::pin::Pin;
 use std::task::{Context, Poll};
 
 use axum::body::Body;
 use axum::extract::Request;
+use axum::http::{HeaderMap, header};
 use axum::response::{IntoResponse, Response};
 use http_body_util::{BodyExt, Limited};
 use tower::{Layer, Service};
 use tracing::warn;
 
 use crate::error::ProxyError;
-use crate::security::SecurityFilter;
+use crate::security::{BodyRule, SecurityFilter};
 
 /// Applies [`SecurityFilter`] to every request.
 #[derive(Clone)]
@@ -81,30 +85,60 @@ where
         Box::pin(async move {
             let mut inner = ready_inner;
             let (parts, body) = request.into_parts();
-
-            let body = match Limited::new(body, max_body_bytes).collect().await {
-                Ok(collected) => collected.to_bytes(),
-                Err(error) => return Ok(body_error(error, max_body_bytes).into_response()),
-            };
-
-            let method = parts.method.as_str();
-            let path = parts.uri.path();
-            if let Err(denial) = filter.check_request(method, path, &body) {
+            let audit = |denial: ProxyError| {
                 warn!(
-                    method,
-                    path,
+                    method = parts.method.as_str(),
+                    path = parts.uri.path(),
                     profile = ?filter.profile(),
                     reason = %denial,
                     "request denied by security policy"
                 );
-                return Ok(denial.into_response());
-            }
+                denial.into_response()
+            };
 
-            inner
-                .call(Request::from_parts(parts, Body::from(body)))
-                .await
+            let rule = match filter.check_head(parts.method.as_str(), parts.uri.path()) {
+                Ok(rule) => rule,
+                Err(denial) => return Ok(audit(denial)),
+            };
+
+            let body = match rule {
+                BodyRule::None => match oversized_declaration(&parts.headers, max_body_bytes) {
+                    Some(error) => return Ok(error.into_response()),
+                    None => Body::new(Limited::new(body, max_body_bytes)),
+                },
+                rule => {
+                    let collected = match Limited::new(body, max_body_bytes).collect().await {
+                        Ok(collected) => collected.to_bytes(),
+                        Err(error) => {
+                            return Ok(body_error(error, max_body_bytes).into_response());
+                        }
+                    };
+                    if let Err(denial) = SecurityFilter::check_body(rule, &collected) {
+                        return Ok(audit(denial));
+                    }
+                    Body::from(collected)
+                }
+            };
+
+            inner.call(Request::from_parts(parts, body)).await
         })
     }
+}
+
+/// Refuse an over-limit body before reading it, when the sender declared a size.
+///
+/// A streamed body has no declared length, so [`Limited`] stays the backstop —
+/// it can only abort mid-transfer, which is why a declaration is worth checking.
+fn oversized_declaration(headers: &HeaderMap, max_body_bytes: usize) -> Option<ProxyError> {
+    let declared = headers
+        .get(header::CONTENT_LENGTH)?
+        .to_str()
+        .ok()?
+        .parse::<u64>()
+        .ok()?;
+
+    (declared > max_body_bytes as u64)
+        .then(|| ProxyError::TooLarge(format!("request body exceeds {max_body_bytes} bytes")))
 }
 
 fn body_error(error: axum::BoxError, max_body_bytes: usize) -> ProxyError {
@@ -125,23 +159,43 @@ fn body_error(error: axum::BoxError, max_body_bytes: usize) -> ProxyError {
 mod tests {
     use super::*;
     use axum::Router;
+    use axum::body::Bytes;
     use axum::http::StatusCode;
     use axum::routing::any;
     use tower::ServiceExt;
 
-    fn router(max_body_bytes: usize) -> Router {
+    use crate::config::SecurityProfile;
+
+    /// Answers with the body length, so a test can tell what actually arrived.
+    fn router_with(filter: SecurityFilter, max_body_bytes: usize) -> Router {
         Router::new()
-            .fallback(any(|| async { "reached upstream" }))
-            .layer(SecurityLayer::new(SecurityFilter::new(), max_body_bytes))
+            .fallback(any(async |body: Bytes| body.len().to_string()))
+            .layer(SecurityLayer::new(filter, max_body_bytes))
+    }
+
+    fn router(max_body_bytes: usize) -> Router {
+        router_with(SecurityFilter::new(), max_body_bytes)
+    }
+
+    async fn respond(
+        router: Router,
+        method: &str,
+        uri: &str,
+        headers: &[(&str, &str)],
+        body: &str,
+    ) -> Response {
+        let mut request = Request::builder().method(method).uri(uri);
+        for (name, value) in headers {
+            request = request.header(*name, *value);
+        }
+        router
+            .oneshot(request.body(Body::from(body.to_owned())).unwrap())
+            .await
+            .unwrap()
     }
 
     async fn send(router: Router, method: &str, uri: &str, body: &str) -> StatusCode {
-        let request = Request::builder()
-            .method(method)
-            .uri(uri)
-            .body(Body::from(body.to_owned()))
-            .unwrap();
-        router.oneshot(request).await.unwrap().status()
+        respond(router, method, uri, &[], body).await.status()
     }
 
     #[tokio::test]
@@ -161,12 +215,40 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn rejects_bodies_over_the_limit() {
-        let oversized = "x".repeat(64);
+    async fn rejects_an_oversized_inspected_body() {
+        let filter = SecurityFilter::for_profile(&SecurityProfile::ContainerRuntime);
         assert_eq!(
-            send(router(16), "POST", "/containers/create", &oversized).await,
+            send(
+                router_with(filter, 16),
+                "POST",
+                "/containers/create",
+                &"x".repeat(64)
+            )
+            .await,
             StatusCode::PAYLOAD_TOO_LARGE
         );
+    }
+
+    #[tokio::test]
+    async fn refuses_a_declared_oversize_before_reading_it() {
+        let response = respond(
+            router(16),
+            "GET",
+            "/version",
+            &[("content-length", "64")],
+            &"x".repeat(64),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+    }
+
+    #[tokio::test]
+    async fn passes_uninspected_bodies_through_intact() {
+        let response = respond(router(1024), "GET", "/version", &[], &"x".repeat(64)).await;
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        assert_eq!(body.as_ref(), b"64", "the whole body reached the handler");
     }
 
     #[tokio::test]

@@ -23,11 +23,9 @@ use std::time::Duration;
 
 use axum::Router;
 use axum::body::Body;
-use axum::extract::State;
-use axum::http::{HeaderMap, Method, StatusCode};
+use axum::extract::{Request, State};
+use axum::http::{HeaderMap, StatusCode};
 use axum::response::Response;
-use http_body_util::{BodyExt, Full};
-use hyper::body::Bytes;
 use hyper_util::client::legacy::Client;
 use hyper_util::rt::TokioExecutor;
 use hyperlocal_next::{UnixConnector, Uri};
@@ -146,28 +144,24 @@ pub fn test_router(docker_socket: PathBuf, security: SecurityFilter) -> Router {
 ///   request. This handler performs no policy checks of its own.
 async fn proxy_handler(
     State(state): State<AppState>,
-    method: Method,
-    uri: axum::http::Uri,
-    headers: HeaderMap,
-    body: Bytes,
+    request: Request,
 ) -> Result<Response, ProxyError> {
-    let path = uri.path();
-    let query = uri.query().unwrap_or("");
+    let (parts, body) = request.into_parts();
+    let path = parts.uri.path().to_owned();
 
-    let path_and_query = if query.is_empty() {
-        path.to_string()
-    } else {
-        format!("{path}?{query}")
+    let path_and_query = match parts.uri.query() {
+        Some(query) if !query.is_empty() => format!("{path}?{query}"),
+        _ => path.clone(),
     };
     let target_uri: hyper::Uri = Uri::new(&state.docker_socket, &path_and_query).into();
 
     let mut req_builder = hyper::Request::builder()
-        .method(method.as_str())
+        .method(parts.method.as_str())
         .uri(&target_uri);
 
     // `Host` is supplied by the Unix-socket transport.
-    let client_connection_headers = connection_specific_headers(&headers);
-    for (key, value) in headers.iter() {
+    let client_connection_headers = connection_specific_headers(&parts.headers);
+    for (key, value) in parts.headers.iter() {
         let key_lower = key.as_str().to_ascii_lowercase();
         if key_lower == "host" || is_hop_by_hop(&key_lower, &client_connection_headers) {
             continue;
@@ -176,12 +170,12 @@ async fn proxy_handler(
     }
 
     let req = req_builder
-        .body(Full::new(body))
+        .body(body)
         .map_err(|e| ProxyError::Internal(format!("failed to build request: {e}")))?;
 
     // Docker's Unix HTTP server may close keep-alive connections between calls,
     // so a pooled socket can be stale by the time it is reused.
-    let client: Client<UnixConnector, Full<Bytes>> = Client::builder(TokioExecutor::new())
+    let client: Client<UnixConnector, Body> = Client::builder(TokioExecutor::new())
         .pool_max_idle_per_host(0)
         .build(UnixConnector);
     let resp = client.request(req).await.map_err(|e| {
@@ -205,17 +199,10 @@ async fn proxy_handler(
         }
     }
 
-    let body_bytes = resp
-        .collect()
-        .await
-        .map_err(|e| {
-            tracing::error!(error = %e, path, "Docker upstream response read failed");
-            ProxyError::Docker(format!("failed to read response: {e}"))
-        })?
-        .to_bytes();
-
+    // Relayed frame by frame rather than collected: `/events` and follow-mode
+    // logs never end, so buffering them would withhold the whole response.
     response_builder
-        .body(Body::from(body_bytes))
+        .body(Body::new(resp.into_body()))
         .map_err(|e| ProxyError::Internal(format!("failed to build response: {e}")))
 }
 
