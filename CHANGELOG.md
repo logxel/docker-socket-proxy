@@ -21,7 +21,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   measured dependency cost for each candidate.
 - `SECURITY.md` with a disclosure process and an explicit scope statement.
 - Documented trust boundary, known limitations, and the size budget.
-
 - `--max-body-bytes` (default 16 MiB) bounding buffered request bodies, answered
   with `413` when exceeded, and `--timeout-secs` (default disabled) applying a
   request deadline answered with `504`.
@@ -62,10 +61,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Known Issues
 - Streaming and 101-upgrade endpoints remain unsupported; see
   [Known Limitations](README.md#known-limitations).
-
-See [Known Limitations](README.md#known-limitations). Streaming and exec
-passthrough, SIGTERM handling, denial auditing, and Docker-shaped error bodies
-are all outstanding.
 
 ## [0.1.1] — 2026-08-12
 
