@@ -177,13 +177,13 @@ matching · RFC 3986 path normalization · SBOM, SLSA provenance, and Scorecard 
 CI · digest-pinned builder with OCI labels.
 
 ### Wave 3 — Capability
-1. **Streaming and 101-upgrade passthrough** — the largest single piece of work.
-   The `container-runtime` profile permits exec endpoints the transport cannot
-   carry
+1. **Streaming and 101-upgrade passthrough** — *done*. Bodies relay frame by
+   frame and a 101 splices both connections, so `/events`, follow-mode logs,
+   `/build`, and `docker exec` all work
 2. **`/metrics` and health endpoint**
 3. **Tecnativa env-var compatibility shim** — adoption unlock
-4. **`tls` feature** for mTLS
-5. **NIST 800-190 / CIS control mapping** in the security docs
+4. **NIST 800-190 / CIS control mapping** in the security docs
+5. **`tls` feature** for mTLS
 
 ---
 

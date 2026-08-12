@@ -24,10 +24,11 @@ use std::time::Duration;
 use axum::Router;
 use axum::body::Body;
 use axum::extract::{Request, State};
-use axum::http::{HeaderMap, StatusCode};
+use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::Response;
+use hyper::upgrade::OnUpgrade;
 use hyper_util::client::legacy::Client;
-use hyper_util::rt::TokioExecutor;
+use hyper_util::rt::{TokioExecutor, TokioIo};
 use hyperlocal_next::{UnixConnector, Uri};
 use tokio::net::TcpListener;
 use tower_http::timeout::TimeoutLayer;
@@ -146,7 +147,7 @@ async fn proxy_handler(
     State(state): State<AppState>,
     request: Request,
 ) -> Result<Response, ProxyError> {
-    let (parts, body) = request.into_parts();
+    let (mut parts, body) = request.into_parts();
     let path = parts.uri.path().to_owned();
 
     let path_and_query = match parts.uri.query() {
@@ -167,6 +168,16 @@ async fn proxy_handler(
             continue;
         }
         req_builder = req_builder.header(key.as_str(), value.as_bytes());
+    }
+
+    // Regenerated rather than forwarded: the upgrade is negotiated per hop, so
+    // the offer this proxy makes upstream is its own.
+    let upgrade_offer = requested_upgrade(&parts.headers, &client_connection_headers);
+    let client_upgrade = parts.extensions.remove::<OnUpgrade>();
+    if let Some(protocol) = upgrade_offer {
+        req_builder = req_builder
+            .header(header::CONNECTION, "upgrade")
+            .header(header::UPGRADE, protocol);
     }
 
     let req = req_builder
@@ -199,10 +210,69 @@ async fn proxy_handler(
         }
     }
 
+    if status == StatusCode::SWITCHING_PROTOCOLS {
+        return switch_protocols(response_builder, resp, client_upgrade);
+    }
+
     // Relayed frame by frame rather than collected: `/events` and follow-mode
     // logs never end, so buffering them would withhold the whole response.
     response_builder
         .body(Body::new(resp.into_body()))
+        .map_err(|e| ProxyError::Internal(format!("failed to build response: {e}")))
+}
+
+/// The protocol a client offered to upgrade to.
+///
+/// RFC 9110 §7.8 requires the `Connection` field to name `upgrade` as well, so
+/// an `Upgrade` header alone is not an offer.
+fn requested_upgrade(
+    headers: &HeaderMap,
+    connection_specific: &HashSet<String>,
+) -> Option<HeaderValue> {
+    connection_specific
+        .contains("upgrade")
+        .then(|| headers.get(header::UPGRADE).cloned())
+        .flatten()
+}
+
+/// Accept a 101 by splicing the client and upstream connections together.
+///
+/// The client half only becomes available once this response has been written,
+/// so the copy has to outlive the handler.
+fn switch_protocols(
+    mut response_builder: axum::http::response::Builder,
+    mut upstream: hyper::Response<hyper::body::Incoming>,
+    client_upgrade: Option<OnUpgrade>,
+) -> Result<Response, ProxyError> {
+    let client_upgrade = client_upgrade.ok_or_else(|| {
+        ProxyError::Docker("upstream switched protocols without a client offer".into())
+    })?;
+
+    if let Some(protocol) = upstream.headers().get(header::UPGRADE).cloned() {
+        response_builder = response_builder
+            .header(header::CONNECTION, "upgrade")
+            .header(header::UPGRADE, protocol);
+    }
+    let upstream_upgrade = hyper::upgrade::on(&mut upstream);
+
+    tokio::spawn(async move {
+        let (client, upstream) = match tokio::try_join!(client_upgrade, upstream_upgrade) {
+            Ok(pair) => pair,
+            Err(e) => {
+                tracing::error!(error = %e, "connection upgrade failed");
+                return;
+            }
+        };
+
+        let mut client = TokioIo::new(client);
+        let mut upstream = TokioIo::new(upstream);
+        if let Err(e) = tokio::io::copy_bidirectional(&mut client, &mut upstream).await {
+            tracing::debug!(error = %e, "upgraded connection ended");
+        }
+    });
+
+    response_builder
+        .body(Body::empty())
         .map_err(|e| ProxyError::Internal(format!("failed to build response: {e}")))
 }
 
@@ -289,6 +359,20 @@ mod tests {
         for name in ["x-one", "x-two", "x-three"] {
             assert!(is_hop_by_hop(name, &listed), "{name} should be stripped");
         }
+    }
+
+    #[test]
+    fn reads_an_upgrade_offer_only_when_connection_names_it() {
+        let offered = headers(&[("connection", "upgrade"), ("upgrade", "tcp")]);
+        let listed = connection_specific_headers(&offered);
+        assert_eq!(
+            requested_upgrade(&offered, &listed).unwrap().as_bytes(),
+            b"tcp"
+        );
+
+        let bare = headers(&[("upgrade", "tcp")]);
+        let listed = connection_specific_headers(&bare);
+        assert!(requested_upgrade(&bare, &listed).is_none());
     }
 
     #[test]

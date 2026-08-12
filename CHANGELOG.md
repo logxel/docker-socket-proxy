@@ -27,6 +27,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - RFC 3986 §6 path normalization before policy matching: dot segments resolved,
   empty segments collapsed, percent-encoding decoded. Encoded path separators
   are rejected, since RFC 3986 §2.2 makes `%2F` distinct from `/`.
+- **101-upgrade passthrough**, so `docker exec` works through the proxy —
+  stdin, stdout, and the exit status. `container-runtime` gained
+  `GET /exec/*/json` and `POST /exec/*/resize`, without which the CLI cannot
+  read the exit status of an exec it just ran.
 - Release images now carry an SBOM, max-mode provenance, and a signed SLSA
   build-provenance attestation; OpenSSF Scorecard runs weekly.
 - OCI image labels and a digest-pinned builder base.
@@ -70,8 +74,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   functionality and none in binary size.
 
 ### Known Issues
-- Streaming and 101-upgrade endpoints remain unsupported; see
-  [Known Limitations](README.md#known-limitations).
+- `/containers/{id}/attach` is blocked in every profile; `docker exec` is the
+  supported path. See [Known Limitations](README.md#known-limitations).
 
 ## [0.1.1] — 2026-08-12
 

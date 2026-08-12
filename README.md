@@ -119,7 +119,7 @@ This proxy **reduces** the blast radius of socket exposure. It does not eliminat
 
 ### Container Runtime Profile
 
-Use the opt-in `container-runtime` profile for Docker-backed orchestrators. It supports `DockerRunLauncher` lifecycle calls, custom containers, image builds and loads, bind/volume mounts, network connections, and wait/log/archive operations. Privileged mode, capability changes, host devices, and namespace overrides remain blocked.
+Use the opt-in `container-runtime` profile for Docker-backed orchestrators. It supports `DockerRunLauncher` lifecycle calls, custom containers, image builds and loads, bind/volume mounts, network connections, `docker exec`, and wait/log/archive operations. Privileged mode, capability changes, host devices, and namespace overrides remain blocked.
 
 ```bash
 DOCKER_PROXY_PROFILE=container-runtime docker-socket-proxy
@@ -131,7 +131,7 @@ For profiles that permit `/containers/create`, the request body is inspected and
 
 Tracked in [`STATUS.md`](STATUS.md) with a remediation plan in [`docs/standards.md`](docs/standards.md).
 
-- **Exec and attach do not work yet.** HTTP connection upgrade (101) is not passed through, so `/exec/{id}/start` and `/containers/{id}/attach` fail even though `container-runtime` permits them at the policy layer. Streaming itself works: `/events`, `/containers/{id}/logs?follow=1`, and `/build` output are relayed as they arrive.
+- **`/containers/{id}/attach` is blocked in every profile.** `docker exec` is the supported path and works; attach has no policy allowing it.
 - **No authentication.** See [Trust Boundary](#trust-boundary).
 - **No `/metrics` or health endpoint.**
 

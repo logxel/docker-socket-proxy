@@ -27,7 +27,8 @@ as a `tower::Layer`. `proxy` is the transport adapter and decides nothing.
 **Transport** — Axum server forwarding to the Docker Unix socket, hop-by-hop
 headers stripped in both directions (RFC 9110 §7.6.1), Docker-shaped error
 bodies, graceful shutdown on SIGTERM and SIGINT. Bodies are relayed as they
-arrive, so `/events`, `logs?follow=1`, and `/build` stream.
+arrive, so `/events`, `logs?follow=1`, and `/build` stream, and a 101 upgrade is
+spliced through so `docker exec` works.
 
 **Limits** — request bodies bounded by `--max-body-bytes` (413 when exceeded);
 a declared over-limit `Content-Length` is refused before any bytes are read.
@@ -42,7 +43,7 @@ with SHA-pinned actions and `--locked`; releases carry an SBOM, max-mode
 provenance, and a signed SLSA attestation; OpenSSF Scorecard runs weekly;
 Dependabot covers cargo, actions, and docker.
 
-**Tests** — 45 passing (41 unit, 4 integration against a mock socket).
+**Tests** — 50 passing (46 unit, 4 integration against a mock socket).
 
 ## Known Gaps
 Ordered by the waves in [`docs/standards.md`](docs/standards.md#next-steps).
@@ -50,7 +51,6 @@ Identifiers are stable; closed gaps are not renumbered.
 
 | # | Gap | Location |
 |---|-----|----------|
-| 11 | `upgrade`/`connection` are stripped from responses, so 101-upgrade endpoints (`/exec/*/start`, `attach`) cannot work, though `container-runtime` permits them. Streaming itself now works | `src/proxy.rs` |
 | 12 | No authentication of any kind on the listening port (OWASP API2) | `src/proxy.rs` |
 | 15 | No `/metrics` or health endpoint | `src/proxy.rs` |
 | 16 | No compatibility shim for the Tecnativa/linuxserver environment variables | `src/policy.rs` |
@@ -60,8 +60,7 @@ Identifiers are stable; closed gaps are not renumbered.
 Nothing.
 
 ## Next Steps
-**Wave 3** (capability): gaps 11, 12, 15, 16, 17. Start with 11 — streaming and
-101-upgrade passthrough is the largest piece and the only one users can see.
+**Wave 3** (capability): gap 11 is closed. Remaining are 15, 16, 17, then 12.
 See [`docs/standards.md`](docs/standards.md#next-steps).
 
 ## Blockers
