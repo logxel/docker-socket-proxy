@@ -150,7 +150,7 @@ Code changes using crates already present, or the +2-crate `tower-http`.
 |---|---|---|
 | **Cedar** (`cedar-policy`) | +59 crates | Technically the best fit — Rust-native, formally verified — but adds half again the whole dependency tree to replace a matcher that is ~30 lines. Revisit only if policy expressiveness becomes the bottleneck |
 | **OpenTelemetry SDK / OTLP** | +77 crates | The gRPC exporter stack is disproportionate. We take the semantic conventions for free and leave export to the log pipeline |
-| **JSON Schema** (`jsonschema`) | +83 crates | Would make `check_dagster_create_body` data instead of code — genuinely desirable, but not at this price. A small declarative field-constraint config covers the real use case |
+| **JSON Schema** (`jsonschema`) | +83 crates | Would make create-body inspection data instead of code — genuinely desirable, but not at this price. A small declarative field-constraint config covers the real use case |
 | **OPA / Rego** | 0 binary, +1 container | Zero binary cost, but a sidecar contradicts the single-static-binary delivery model |
 | **CEL** (`cel-interpreter`) | moderate | Middle ground for body predicates; no current need that the field-constraint config doesn't cover |
 | **Full DDD** (aggregates, repositories) | — | Wrong scale for ~1,500 LOC |
