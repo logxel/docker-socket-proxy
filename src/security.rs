@@ -44,13 +44,14 @@ pub struct EndpointSet {
 
 /// Endpoint filter that enforces allowlist/denylist rules.
 ///
-/// Evaluation order:
-/// 1. **Denylist** — if method AND endpoint match, block immediately.
-/// 2. **Allowlist** — if method AND endpoint match, allow.
-/// 3. **Default deny** — everything else is blocked.
+/// Combining algorithm is `deny-overrides`, evaluated in order:
+/// 1. **Exclusions** — block.
+/// 2. **Denylist** — method AND endpoint match: block.
+/// 3. **Allowlist** — method AND endpoint match: allow.
+/// 4. **Default deny**.
 ///
-/// Patterns support a `*` wildcard that matches exactly one path
-/// segment (e.g. `/containers/*/json` matches `/containers/abc/json`).
+/// Patterns support a `*` wildcard matching exactly one path segment
+/// (`/containers/*/json` matches `/containers/abc/json`).
 #[derive(Debug, Clone)]
 pub struct SecurityFilter {
     allowed_methods: HashSet<String>,
@@ -65,10 +66,7 @@ pub struct SecurityFilter {
 impl SecurityFilter {
     // ── Constructors ─────────────────────────────────────────
 
-    /// Create a filter with built-in defaults.
-    ///
-    /// Allows common read-only Docker endpoints on GET/HEAD.
-    /// Blocks all mutation endpoints (container create, exec, build).
+    /// Create a filter with built-in defaults: read-only endpoints on GET/HEAD.
     pub fn new() -> Self {
         Self {
             allowed_methods: HashSet::from(["GET".into(), "HEAD".into()]),
@@ -184,9 +182,8 @@ impl SecurityFilter {
     fn from_config(cfg: AllowlistConfig, profile: &SecurityProfile) -> Self {
         let mut filter = Self::for_profile(profile);
 
-        // `allow`/`deny` are additive modifiers for compatibility with the
-        // common Docker socket proxy terminology. `include`/`exclude` are the
-        // explicit modifier names and are applied after the base profile.
+        // `allow`/`deny` are aliases kept for compatibility with the terminology
+        // other Docker socket proxies use; `include`/`exclude` are the explicit names.
         for set in [cfg.allow, cfg.include].into_iter().flatten() {
             extend_unique(&mut filter.allowed_endpoints, set.endpoints);
             extend_set(&mut filter.allowed_methods, set.methods);
@@ -234,13 +231,14 @@ impl SecurityFilter {
         );
     }
 
+    /// The profile this filter was built from, for audit events.
+    pub fn profile(&self) -> &SecurityProfile {
+        &self.profile
+    }
+
     // ── Check ─────────────────────────────────────────────────
 
-    /// Check whether a request is allowed through the proxy.
-    ///
-    /// # Arguments
-    /// - `method` — HTTP method (e.g. `"GET"`, `"POST"`).
-    /// - `path`   — Request URI path (e.g. `"/containers/json"`).
+    /// Check a method and path against the policy.
     pub fn check(&self, method: &str, path: &str) -> SecurityResult {
         if self.excluded_methods.contains(method)
             || self
@@ -252,7 +250,6 @@ impl SecurityFilter {
                 "excluded by policy: {method} {path}"
             )));
         }
-        // 1. Denylist takes priority
         if self.denied_methods.contains(method)
             && self
                 .denied_endpoints
@@ -264,7 +261,6 @@ impl SecurityFilter {
             )));
         }
 
-        // 2. Allowlist
         if self.allowed_methods.contains(method)
             && self
                 .allowed_endpoints
@@ -274,7 +270,6 @@ impl SecurityFilter {
             return Ok(());
         }
 
-        // 3. Default deny
         Err(ProxyError::Forbidden(format!(
             "not allowed: {method} {path}"
         )))
@@ -316,6 +311,8 @@ fn extend_set(target: &mut HashSet<String>, values: Option<Vec<String>>) {
     target.extend(values.into_iter().flatten());
 }
 
+/// Strip a Docker API version prefix (`/v1.55/version` → `/version`) so policy
+/// patterns need not enumerate versions.
 fn normalize_api_path(path: &str) -> &str {
     let mut segments = path.split('/');
     let _root = segments.next();
@@ -331,6 +328,10 @@ fn normalize_api_path(path: &str) -> &str {
     path
 }
 
+/// Reject container-create bodies that would escape the container boundary.
+///
+/// Mounts are deliberately permitted: orchestrators require them, and this
+/// profile is documented as trusted-caller-only.
 fn check_dagster_create_body(body: &[u8]) -> SecurityResult {
     let value: serde_json::Value = serde_json::from_slice(body).map_err(|_| {
         ProxyError::Forbidden("Dagster container create body must be valid JSON".into())
@@ -383,24 +384,20 @@ impl Default for SecurityFilter {
 
 // ── Pattern matching ───────────────────────────────────────────
 
-/// Match a path against a pattern that supports `*` as a single-segment wildcard.
+/// Match a path against a pattern, in one of three modes:
 ///
-/// - Exact: `"/containers/json"` matches `"/containers/json"`
-/// - Wildcard: `"/containers/*/json"` matches `"/containers/abc123/json"`
-/// - Prefix: `"/exec/"` matches `"/exec/anything/here"`
-/// - Wildcard fails on wrong suffix: `"/containers/*/json"` does NOT match `"/containers/abc/exec"`
+/// - exact — `/containers/json`
+/// - prefix, when the pattern ends in `/` — `/exec/` matches `/exec/abc/start`
+/// - wildcard, where `*` matches exactly one segment — `/containers/*/json`
 fn matches_pattern(pattern: &str, path: &str) -> bool {
-    // Exact match
     if pattern == path {
         return true;
     }
 
-    // Prefix match (pattern ends with '/')
     if pattern.ends_with('/') {
         return path.starts_with(pattern);
     }
 
-    // Wildcard segment matching: /containers/*/json
     if pattern.contains('*') {
         let segs_pat: Vec<&str> = pattern.split('/').filter(|s| !s.is_empty()).collect();
         let segs_path: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
@@ -475,20 +472,15 @@ mod tests {
     #[test]
     fn allows_get_to_allowed_endpoints() {
         let f = filter();
-        // Network list
         assert!(f.check("GET", "/networks").is_ok());
-        // Network inspect
         assert!(f.check("HEAD", "/networks/my-net").is_ok());
-        // Volume list
         assert!(f.check("GET", "/volumes").is_ok());
-        // Volume inspect
         assert!(f.check("GET", "/volumes/my-vol").is_ok());
     }
 
     #[test]
     fn blocks_post_to_allowed_prefix() {
         let f = filter();
-        // POST to a network endpoint should be blocked
         assert!(f.check("POST", "/networks/create").is_err());
     }
 
@@ -549,7 +541,6 @@ methods = []
         let cfg: AllowlistConfig = toml::from_str(toml).unwrap();
         let f = SecurityFilter::from_config(cfg, &SecurityProfile::Default);
 
-        // The configured endpoint is added while the profile defaults remain.
         assert!(f.check("GET", "/_ping").is_ok());
         assert!(f.check("GET", "/containers/json").is_ok());
         assert!(f.check("GET", "/info").is_ok());
@@ -578,7 +569,6 @@ methods = []
             "/containers/*/json",
             "/containers/def456/json"
         ));
-        // Wildcard matches ONE segment, not multiple
         assert!(!matches_pattern(
             "/containers/*/json",
             "/containers/a/b/json"

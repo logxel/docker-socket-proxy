@@ -9,13 +9,10 @@ use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 
 fn main() {
-    // Parse config first (Fail-Fast: bad config exits immediately).
+    // Parsed before logging is initialised so a bad config fails fast.
     let config = docker_socket_proxy::config::Config::parse();
-
-    // Initialise structured logging.
     init_logging(&config);
 
-    // Run the async proxy server.
     let rt = match tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
