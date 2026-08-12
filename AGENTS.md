@@ -45,7 +45,7 @@ The service is a **Policy Enforcement Point** in front of a **Policy Decision Po
 ### Technology Stack
 - **Runtime**: Tokio async runtime
 - **HTTP Server**: Axum (hyper-based)
-- **Middleware**: tower + tower-http (`limit`, `timeout`, `trace`)
+- **Middleware**: tower for the enforcement layer, tower-http for `timeout`
 - **HTTP Client**: hyperlocal-next for Unix socket forwarding
 - **Configuration**: Clap for CLI args + environment variables; TOML for policy files
 - **Observability**: Tracing for structured JSON logging
@@ -64,8 +64,12 @@ No typed Docker client is used — the proxy forwards raw HTTP and never deseria
 - Multi-arch: `linux/amd64` + `linux/arm64`
 - Base image: `scratch` (static binary, no libc needed)
 - Builder base pinned by digest; `cargo build --locked`
-- Runs as a non-root `USER`
-- Carries `org.opencontainers.image.*` annotations in the Dockerfile itself
+- Carries `org.opencontainers.image.*` labels in the Dockerfile itself
+- Ships without a `USER` directive: the socket is typically `root:docker 0660`,
+  so a fixed unprivileged UID would fail on most hosts. Operators supply their
+  own UID and the host's docker GID at run time. The image holds no shell,
+  package manager, or setuid binary, so UID 0 grants nothing beyond the mounted
+  socket
 - Published to: `ghcr.io/logxel/docker-socket-proxy`
 - Tags: `latest`, `v{version}`, `v{major}.{minor}`, `sha-{short_commit}`
 

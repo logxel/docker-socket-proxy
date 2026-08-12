@@ -33,13 +33,25 @@ cargo build --release --locked
 docker-socket-proxy [OPTIONS]
 
 Options:
-  --port <PORT>          TCP port to listen on [env: DOCKER_PROXY_PORT] [default: 2375]
-  --socket <PATH>        Docker Unix socket path [env: DOCKER_SOCKET] [default: /var/run/docker.sock]
-  --allowlist <FILE>     Path to TOML allowlist configuration file
-  --profile <PROFILE>    Built-in profile: default, read-only, container-runtime
-  --log-level <LEVEL>    Log level [env: RUST_LOG] [default: info]
-  --log-format <FORMAT>  Log format: json, pretty [default: json]
+  --port <PORT>              TCP port to listen on [env: DOCKER_PROXY_PORT] [default: 2375]
+  --socket <PATH>            Docker Unix socket path [env: DOCKER_SOCKET] [default: /var/run/docker.sock]
+  --allowlist <FILE>         Path to TOML allowlist configuration file
+  --profile <PROFILE>        Built-in profile: default, read-only, container-runtime
+  --max-body-bytes <BYTES>   Maximum request body size [default: 16777216]
+  --timeout-secs <SECS>      Request timeout; 0 disables [default: 0]
+  --log-level <LEVEL>        Log level [env: RUST_LOG] [default: info]
+  --log-format <FORMAT>      Log format: json, pretty [default: json]
 ```
+
+A request body over `--max-body-bytes` is answered with `413`. Raise it where
+`/build` is permitted and used — image build contexts are the large case.
+
+`--timeout-secs` is off by default because `/containers/{id}/wait` and
+follow-mode logs legitimately block for as long as the workload runs. Set it
+where the permitted endpoints are all short-lived.
+
+An `--allowlist` file that cannot be read or parsed is fatal. The proxy will not
+start on profile defaults you did not ask for.
 
 ### Profiles
 
@@ -97,6 +109,13 @@ This proxy **reduces** the blast radius of socket exposure. It does not eliminat
 - **There is no authentication.** Anyone who can reach the listening port receives everything the active profile permits. Keep the port on a private network or a container-internal bridge.
 - **Mounting the socket `:ro` does nothing for security.** The read-only flag applies to the inode, not the protocol — the socket stays fully bidirectional. This is a widespread misconception; do not rely on it.
 - **`container-runtime` grants real power.** It permits container creation, image builds, and bind mounts. A caller with this profile can, with effort, reach the host. Expose it only to services you already trust.
+- **The image has no `USER`.** A fixed unprivileged UID cannot open a `root:docker 0660` socket, so it would fail on most hosts. To run non-root, supply the host's docker GID yourself:
+
+  ```bash
+  docker run --user 65534:$(getent group docker | cut -d: -f3) ...
+  ```
+
+  The image carries no shell, package manager, or setuid binary, so UID 0 inside it grants nothing beyond the socket you mounted.
 
 ### Container Runtime Profile
 
@@ -113,8 +132,8 @@ For profiles that permit `/containers/create`, the request body is inspected and
 Tracked in [`STATUS.md`](STATUS.md) with a remediation plan in [`docs/standards.md`](docs/standards.md).
 
 - **Streaming and exec do not work yet.** Request and response bodies are fully buffered, and HTTP connection upgrade (101) is not passed through. This affects `/events`, `/containers/{id}/logs?follow=1`, `/build` output streaming, and `/exec/{id}/start`. The `container-runtime` profile *permits* these endpoints at the policy layer, but the transport cannot currently carry them.
-- **No request timeout or body-size limit.** An unauthenticated client can hold connections open or submit an arbitrarily large body.
-- **Path matching is not RFC 3986-normalized.** Percent-encoded and dot-segment paths are matched literally. The matcher fails closed, so this is a hardening gap rather than a known bypass.
+- **No authentication.** See [Trust Boundary](#trust-boundary).
+- **No `/metrics` or health endpoint.**
 
 ## Auditing
 
