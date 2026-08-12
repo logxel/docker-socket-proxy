@@ -22,7 +22,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `SECURITY.md` with a disclosure process and an explicit scope statement.
 - Documented trust boundary, known limitations, and the size budget.
 
+- `--max-body-bytes` (default 16 MiB) bounding buffered request bodies, answered
+  with `413` when exceeded, and `--timeout-secs` (default disabled) applying a
+  request deadline answered with `504`.
+- RFC 3986 §6 path normalization before policy matching: dot segments resolved,
+  empty segments collapsed, percent-encoding decoded. Encoded path separators
+  are rejected, since RFC 3986 §2.2 makes `%2F` distinct from `/`.
+- Release images now carry an SBOM, max-mode provenance, and a signed SLSA
+  build-provenance attestation; OpenSSF Scorecard runs weekly.
+- OCI image labels and a digest-pinned builder base.
+
 ### Changed
+- **Policy is split into decision, administration, and enforcement.**
+  `security` decides and is now pure, `policy` owns all policy I/O, and
+  `middleware` enforces as a `tower::Layer` instead of a call inside the
+  handler.
+- **An unreadable or unparseable `--allowlist` file is now fatal.** It was
+  warned about and skipped, which silently applied profile defaults the operator
+  had not written. **Breaking** for deployments relying on that fallback.
+- **`exclude` and `deny` now match consistently.** `exclude` matched on method
+  OR endpoint while `deny` required method AND endpoint. Both now treat an empty
+  side as a wildcard, and a rule with both sides empty is inert.
 - **Error responses now follow the Docker Engine API contract** (`{"message": …}`
   instead of `{"error": …, "status": …}`), so `bollard` and the Docker CLI can
   deserialize proxy-generated errors. **Breaking** for any client parsing the

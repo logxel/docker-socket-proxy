@@ -28,8 +28,9 @@ Measured on the host `x86_64-unknown-linux-gnu` target with the release profile
 these as relative figures.
 
 ```
-release binary          1,827,448 bytes  (1.74 MiB)   budget 8 MB → ~77% headroom
-dependency tree               118 crates
+release binary          1,842,928 bytes  (1.76 MiB)   budget 8 MB → ~77% headroom
+image                   1,965,408 bytes  (1.87 MiB)   budget 10 MB
+dependency tree               121 crates              budget 130
 ```
 
 **The budget is denominated in crates, not bytes.** Dropping two dependencies
@@ -169,15 +170,11 @@ SIGTERM handling · denial auditing · Docker-shaped error bodies · hop-by-hop
 request headers · dropped unused dependencies · `SECURITY.md`, `CHANGELOG.md`,
 Dependabot, SHA-pinned actions, `cargo-deny`, `--locked`.
 
-### Wave 2 — Structure, then the layers it unlocks
-1. **Security filter becomes a `tower::Layer`** (PEP/PDP split)
-2. **Move I/O out of `SecurityFilter`** into a policy-loader adapter — the
-   existing `apply_environment(&HashMap)` test seam shows where the port belongs
-3. **Body-size limit + request timeout** via `tower-http` — nearly free once 1 lands
-4. **Make `exclude` and `deny` consistent** under the `deny-overrides` algorithm
-5. **RFC 3986 path normalization** ahead of matching
-6. **SBOM, SLSA provenance, cosign signing, Scorecard** in CI
-7. **Dockerfile** `USER`, OCI labels, digest-pinned base
+### Wave 2 — Structure, then the layers it unlocks — *done*
+PEP/PDP/PAP split with the filter as a `tower::Layer` · policy I/O moved to a
+loader · body-size limit and optional timeout · consistent `deny-overrides`
+matching · RFC 3986 path normalization · SBOM, SLSA provenance, and Scorecard in
+CI · digest-pinned builder with OCI labels.
 
 ### Wave 3 — Capability
 1. **Streaming and 101-upgrade passthrough** — the largest single piece of work.
