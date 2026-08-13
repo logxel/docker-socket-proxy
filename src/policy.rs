@@ -99,10 +99,10 @@ fn apply_document(filter: &mut SecurityFilter, document: PolicyDocument) {
         filter.allow_mut().extend(set.methods, set.endpoints);
     }
     if let Some(set) = document.deny {
-        filter.deny_mut().extend(set.methods, set.endpoints);
+        filter.deny_mut().push(set.methods, set.endpoints);
     }
     if let Some(set) = document.exclude {
-        filter.exclude_mut().extend(set.methods, set.endpoints);
+        filter.exclude_mut().push(set.methods, set.endpoints);
     }
 }
 
@@ -115,11 +115,11 @@ fn apply_environment(filter: &mut SecurityFilter, env: &HashMap<String, String>)
             list(&format!("DOCKER_PROXY_{prefix}_ENDPOINTS")),
         );
     }
-    filter.deny_mut().extend(
+    filter.deny_mut().push(
         list("DOCKER_PROXY_DENY_METHODS"),
         list("DOCKER_PROXY_DENY_ENDPOINTS"),
     );
-    filter.exclude_mut().extend(
+    filter.exclude_mut().push(
         list("DOCKER_PROXY_EXCLUDE_METHODS"),
         list("DOCKER_PROXY_EXCLUDE_ENDPOINTS"),
     );

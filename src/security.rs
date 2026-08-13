@@ -29,20 +29,30 @@ pub struct RuleSet {
 }
 
 impl RuleSet {
-    fn new(methods: impl IntoIterator<Item = &'static str>, endpoints: &[&str]) -> Self {
-        Self {
-            methods: methods.into_iter().map(str::to_owned).collect(),
-            endpoints: endpoints.iter().map(|e| (*e).to_owned()).collect(),
-        }
+    fn new(methods: &[&str], endpoints: &[&str]) -> Self {
+        let mut set = Self::default();
+        set.add(methods, endpoints);
+        set
+    }
+
+    fn is_inert(&self) -> bool {
+        self.methods.is_empty() && self.endpoints.is_empty()
     }
 
     fn matches(&self, method: &str, path: &str) -> bool {
-        if self.methods.is_empty() && self.endpoints.is_empty() {
+        if self.is_inert() {
             return false;
         }
         (self.methods.is_empty() || self.methods.contains(method))
             && (self.endpoints.is_empty()
                 || self.endpoints.iter().any(|p| matches_pattern(p, path)))
+    }
+
+    fn add(&mut self, methods: &[&str], endpoints: &[&str]) {
+        self.extend(
+            Some(methods.iter().map(|m| (*m).to_owned()).collect()),
+            Some(endpoints.iter().map(|e| (*e).to_owned()).collect()),
+        );
     }
 
     /// Merge additional methods and endpoints, ignoring duplicates.
@@ -55,6 +65,89 @@ impl RuleSet {
         }
     }
 }
+
+/// Independent rules, matching when any one of them matches.
+///
+/// Each source contributes its own [`RuleSet`] instead of merging into a shared
+/// one, so "no POST anywhere" and "nothing under `/secrets`" stay separate
+/// conditions rather than collapsing into "no POST under `/secrets`".
+#[derive(Debug, Clone, Default)]
+pub struct RuleList(Vec<RuleSet>);
+
+impl RuleList {
+    fn matches(&self, method: &str, path: &str) -> bool {
+        self.0.iter().any(|rule| rule.matches(method, path))
+    }
+
+    fn push_rule(&mut self, rule: RuleSet) {
+        if !rule.is_inert() {
+            self.0.push(rule);
+        }
+    }
+
+    /// Add a rule evaluated independently of those already present.
+    pub fn push(&mut self, methods: Option<Vec<String>>, endpoints: Option<Vec<String>>) {
+        let mut rule = RuleSet::default();
+        rule.extend(methods, endpoints);
+        self.push_rule(rule);
+    }
+}
+
+const READ_METHODS: &[&str] = &["GET", "HEAD"];
+const WRITE_METHODS: &[&str] = &["POST", "PUT", "DELETE"];
+
+const READABLE_ENDPOINTS: &[&str] = &[
+    "/containers/json",
+    "/containers/*/json",
+    "/containers/*/logs",
+    "/images/json",
+    "/images/*/json",
+    "/info",
+    "/version",
+    "/networks",
+    "/networks/",
+    "/volumes",
+    "/volumes/",
+    "/_ping",
+];
+
+const MUTATING_ENDPOINTS: &[&str] = &[
+    "/containers/create",
+    "/containers/*/exec",
+    "/containers/*/start",
+    "/containers/*/stop",
+    "/containers/*/restart",
+    "/containers/*/kill",
+    "/containers/*/pause",
+    "/containers/*/unpause",
+    "/containers/*/rename",
+    "/containers/*/update",
+    "/containers/*/delete",
+    "/containers/*/resize",
+    "/containers/*/attach",
+    "/containers/*/wait",
+    "/exec/",
+    "/build",
+    "/commit",
+];
+
+const RUNTIME_ENDPOINTS: &[&str] = &[
+    "/containers/create",
+    "/containers/*/start",
+    "/containers/*/exec",
+    "/containers/*/wait",
+    "/containers/*/archive",
+    "/containers/*",
+    "/images/create",
+    "/images/load",
+    "/build",
+    "/networks/*/connect",
+    "/exec/*/start",
+    // The exit status and terminal size of an exec the caller already created;
+    // `docker exec` fails without them.
+    "/exec/*/json",
+    "/exec/*/resize",
+];
 
 /// Endpoint filter enforcing allow, deny, and exclude rules.
 ///
@@ -70,112 +163,59 @@ impl RuleSet {
 #[derive(Debug, Clone)]
 pub struct SecurityFilter {
     allow: RuleSet,
-    deny: RuleSet,
-    exclude: RuleSet,
+    deny: RuleList,
+    exclude: RuleList,
     profile: SecurityProfile,
 }
 
 impl SecurityFilter {
     /// Create a filter with built-in defaults: read-only endpoints on GET/HEAD.
     pub fn new() -> Self {
-        Self {
-            allow: RuleSet::new(
-                ["GET", "HEAD"],
-                &[
-                    "/containers/json",
-                    "/containers/*/json",
-                    "/containers/*/logs",
-                    "/images/json",
-                    "/images/*/json",
-                    "/info",
-                    "/version",
-                    "/networks",
-                    "/networks/",
-                    "/volumes",
-                    "/volumes/",
-                    "/_ping",
-                ],
-            ),
-            deny: RuleSet::new(
-                ["POST", "PUT", "DELETE"],
-                &[
-                    "/containers/create",
-                    "/containers/*/exec",
-                    "/containers/*/start",
-                    "/containers/*/stop",
-                    "/containers/*/restart",
-                    "/containers/*/kill",
-                    "/containers/*/pause",
-                    "/containers/*/unpause",
-                    "/containers/*/rename",
-                    "/containers/*/update",
-                    "/containers/*/delete",
-                    "/containers/*/resize",
-                    "/containers/*/attach",
-                    "/containers/*/wait",
-                    "/exec/",
-                    "/build",
-                    "/commit",
-                ],
-            ),
-            exclude: RuleSet::default(),
-            profile: SecurityProfile::Default,
-        }
+        Self::for_profile(&SecurityProfile::Default)
     }
 
     /// Create a filter for a built-in security profile.
     pub fn for_profile(profile: &SecurityProfile) -> Self {
-        let mut filter = Self::new();
-        filter.profile = profile.clone();
+        let mut allow = RuleSet::new(READ_METHODS, READABLE_ENDPOINTS);
+        let mut deny = RuleList::default();
 
-        if matches!(profile, SecurityProfile::ReadOnly) {
-            filter.deny.methods = ["POST", "PUT", "DELETE", "PATCH"]
-                .into_iter()
-                .map(str::to_owned)
-                .collect();
+        match profile {
+            SecurityProfile::Default => {
+                deny.push_rule(RuleSet::new(WRITE_METHODS, MUTATING_ENDPOINTS));
+            }
+            // Every write is refused, on any endpoint, so a later allow rule
+            // cannot reopen one under a profile whose name promises otherwise.
+            SecurityProfile::ReadOnly => {
+                deny.push_rule(RuleSet::new(&["POST", "PUT", "DELETE", "PATCH"], &[]));
+            }
+            SecurityProfile::ContainerRuntime => {
+                allow.add(WRITE_METHODS, RUNTIME_ENDPOINTS);
+
+                let mut writes = RuleSet::new(WRITE_METHODS, MUTATING_ENDPOINTS);
+                // Denials override allowances, so the endpoints this profile
+                // grants have to leave the write denial entirely.
+                writes.endpoints.retain(|endpoint| {
+                    !matches!(
+                        endpoint.as_str(),
+                        "/containers/create"
+                            | "/containers/*/start"
+                            | "/containers/*/exec"
+                            | "/containers/*/wait"
+                            | "/containers/*/delete"
+                            | "/exec/"
+                            | "/build"
+                    )
+                });
+                deny.push_rule(writes);
+            }
         }
 
-        if matches!(profile, SecurityProfile::ContainerRuntime) {
-            filter
-                .allow
-                .methods
-                .extend(["POST".to_owned(), "PUT".to_owned(), "DELETE".to_owned()]);
-            filter.allow.endpoints.extend(
-                [
-                    "/containers/create",
-                    "/containers/*/start",
-                    "/containers/*/exec",
-                    "/containers/*/wait",
-                    "/containers/*/archive",
-                    "/containers/*",
-                    "/images/create",
-                    "/images/load",
-                    "/build",
-                    "/networks/*/connect",
-                    "/exec/*/start",
-                    // The exit status and terminal size of an exec the caller
-                    // already created; `docker exec` fails without them.
-                    "/exec/*/json",
-                    "/exec/*/resize",
-                ]
-                .into_iter()
-                .map(str::to_owned),
-            );
-            filter.deny.endpoints.retain(|endpoint| {
-                !matches!(
-                    endpoint.as_str(),
-                    "/containers/create"
-                        | "/containers/*/start"
-                        | "/containers/*/exec"
-                        | "/containers/*/wait"
-                        | "/containers/*/delete"
-                        | "/exec/"
-                        | "/build"
-                )
-            });
+        Self {
+            allow,
+            deny,
+            exclude: RuleList::default(),
+            profile: profile.clone(),
         }
-
-        filter
     }
 
     /// Mutable access to the allow rules, for the policy loader.
@@ -184,12 +224,12 @@ impl SecurityFilter {
     }
 
     /// Mutable access to the deny rules, for the policy loader.
-    pub fn deny_mut(&mut self) -> &mut RuleSet {
+    pub fn deny_mut(&mut self) -> &mut RuleList {
         &mut self.deny
     }
 
     /// Mutable access to the exclude rules, for the policy loader.
-    pub fn exclude_mut(&mut self) -> &mut RuleSet {
+    pub fn exclude_mut(&mut self) -> &mut RuleList {
         &mut self.exclude
     }
 
@@ -590,7 +630,7 @@ mod tests {
     fn rule_with_only_methods_matches_every_path() {
         let mut f = filter();
         f.exclude_mut()
-            .extend(Some(vec!["GET".into()]), Some(Vec::new()));
+            .push(Some(vec!["GET".into()]), Some(Vec::new()));
         assert!(f.check("GET", "/info").is_err());
         assert!(f.check("HEAD", "/info").is_ok());
     }
@@ -599,9 +639,22 @@ mod tests {
     fn rule_with_only_endpoints_matches_every_method() {
         let mut f = filter();
         f.exclude_mut()
-            .extend(Some(Vec::new()), Some(vec!["/info".into()]));
+            .push(Some(Vec::new()), Some(vec!["/info".into()]));
         assert!(f.check("GET", "/info").is_err());
         assert!(f.check("GET", "/version").is_ok());
+    }
+
+    #[test]
+    fn separate_rules_do_not_intersect_each_other() {
+        let mut f = filter();
+        f.exclude_mut()
+            .push(Some(vec!["GET".into()]), Some(Vec::new()));
+        f.exclude_mut()
+            .push(Some(Vec::new()), Some(vec!["/version".into()]));
+
+        assert!(f.check("GET", "/info").is_err(), "method-only rule");
+        assert!(f.check("HEAD", "/version").is_err(), "endpoint-only rule");
+        assert!(f.check("HEAD", "/_ping").is_ok(), "neither rule");
     }
 
     #[test]
