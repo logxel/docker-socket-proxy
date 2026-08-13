@@ -307,3 +307,60 @@ async fn parallel_requests_keep_their_own_headers() {
         );
     }
 }
+
+/// A malformed percent-encoding is a syntactically invalid request (400), not a
+/// policy denial (403): the path never reached the matching stage.
+#[tokio::test]
+async fn returns_400_for_malformed_path() {
+    // The socket is never contacted; normalization rejects before forwarding.
+    let router = test_router(
+        PathBuf::from("/nonexistent/docker.sock"),
+        SecurityFilter::new(),
+    );
+
+    // `%FF` is well-formed percent-encoding that decodes to an invalid UTF-8
+    // byte, so it passes URI parsing and is refused by the normalizer as a bad
+    // request rather than an authorization failure.
+    let req = Request::builder()
+        .method(Method::GET)
+        .uri("/info%FF")
+        .body(Body::empty())
+        .unwrap();
+
+    let resp = router.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+
+    let body = resp.into_body().collect().await.unwrap().to_bytes();
+    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert!(
+        json["message"].as_str().is_some(),
+        "Docker-shaped error body"
+    );
+}
+
+/// Body inspection must run for any policy that permits `POST /containers/create`,
+/// not only the `container-runtime` profile.
+#[tokio::test]
+async fn create_body_inspection_runs_for_non_runtime_profiles() {
+    let socket = std::env::temp_dir().join("test-proxy-inspect-none.sock");
+    spawn_mock(socket.clone()).await;
+
+    let mut filter = SecurityFilter::deny_all();
+    filter.allow_mut().push(
+        Some(vec!["POST".to_owned()]),
+        Some(vec!["/containers/create".to_owned()]),
+    );
+    let router = test_router(socket, filter);
+
+    let req = Request::builder()
+        .method(Method::POST)
+        .uri("/containers/create")
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from(
+            r#"{"Image":"x","HostConfig":{"Privileged":true}}"#,
+        ))
+        .unwrap();
+
+    let resp = router.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+}

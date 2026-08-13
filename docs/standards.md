@@ -114,7 +114,7 @@ Code changes using crates already present, or the +2-crate `tower-http`.
 | **RFC 3986 §6** — URI normalization | Percent-decode, remove dot-segments, collapse duplicate slashes before policy matching | Free (hand-rolled) |
 | **XACML combining algorithms** | Name and document the precedence as `deny-overrides`; fixes `exclude` matching method-OR-endpoint while `deny` requires method-AND-endpoint | Free (logic) |
 | **Kubernetes RBAC** (as a model) | verbs × resources × resourceNames ≈ methods × patterns × wildcards | Free (design) |
-| **RFC 7386** — JSON Merge Patch | Principled semantics for the `allow`/`deny`/`include`/`exclude` merge | Free (design) |
+| **RFC 7386** — JSON Merge Patch | *Considered, not adopted*: the merge is a monotonic union-append (`allow`/`include` add, `deny`/`exclude` carve out under XACML `deny-overrides`); JSON Merge Patch null-deletes are not implemented | Free (design) |
 | **Tecnativa / linuxserver env convention** | `CONTAINERS=1`, `POST=0` compatibility shim → drop-in replacement | Free (logic) |
 | **OWASP API4** — resource consumption | `tower-http` `RequestBodyLimitLayer` + `TimeoutLayer` | +2 crates |
 | **OpenMetrics / Prometheus** | `/metrics` with allow/deny counters, hand-rolled text exposition over `AtomicU64` | Free |

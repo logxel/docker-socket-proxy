@@ -110,14 +110,19 @@ jobs:
           ASSET: ${{ steps.meta.outputs.asset }}
           DIST: ${{ runner.temp }}/dist
         run: |
+          # `--bundle` writes signature, certificate, and transparency-log proof
+          # in one file. The separate `--output-signature`/`--output-certificate`
+          # flags are deprecated and ignored under the current bundle format,
+          # which is what made this step fail with an empty bundle path.
+          # The `.sigstore.json` suffix is what OpenSSF Scorecard's
+          # Signed-Releases check recognises.
           cosign sign-blob --yes \
-            --output-signature "$DIST/$ASSET.sig" \
-            --output-certificate "$DIST/$ASSET.pem" \
+            --bundle "$DIST/$ASSET.sigstore.json" \
             "$DIST/$ASSET"
 
       # Real SLSA provenance, but API-based rather than a release asset, so
-      # scorecard's file-suffix probe does not see it; the `.sig` uploaded
-      # alongside is what carries the Signed-Releases score.
+      # scorecard's file-suffix probe does not see it; the `.sigstore.json`
+      # bundle uploaded alongside is what carries the Signed-Releases score.
       - name: Attest SLSA build provenance
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
@@ -129,8 +134,7 @@ jobs:
           name: ${{ matrix.target }}-${{ matrix.variant }}
           path: |
             ${{ runner.temp }}/dist/${{ steps.meta.outputs.asset }}
-            ${{ runner.temp }}/dist/${{ steps.meta.outputs.asset }}.sig
-            ${{ runner.temp }}/dist/${{ steps.meta.outputs.asset }}.pem
+            ${{ runner.temp }}/dist/${{ steps.meta.outputs.asset }}.sigstore.json
           if-no-files-found: error
 
   # ---- Publish Release -----------------------------------------------------

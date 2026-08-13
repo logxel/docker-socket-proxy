@@ -221,7 +221,7 @@ Use the opt-in `container-runtime` profile for Docker-backed orchestrators. It s
 DOCKER_PROXY_PROFILE=container-runtime docker-socket-proxy
 ```
 
-For profiles that permit `/containers/create`, the request body is inspected and rejected if it sets `Privileged`, `CapAdd`, `SecurityOpt`, `Devices`, `PidMode`, `IpcMode`, or `UsernsMode`. Bind and volume mounts are permitted — orchestrators need them, and this profile is trusted-caller-only by design.
+For profiles that permit `/containers/create`, the request body is inspected and rejected if it sets `Privileged`, `CapAdd`, `SecurityOpt`, `Devices`, `DeviceRequests`, `PidMode`, `IpcMode`, or `UsernsMode` — at the top level or nested under `HostConfig` — or sets `NetworkMode` to `host`. Bind and volume mounts are permitted — orchestrators need them, and this profile is trusted-caller-only by design.
 
 ## Known Limitations
 

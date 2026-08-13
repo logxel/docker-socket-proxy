@@ -39,7 +39,7 @@ fuzz_target!(|data: &[u8]| {
     let endpoints = Some(vec![pattern.to_string()]);
     filter
         .allow_mut()
-        .extend(methods.clone(), endpoints.clone());
+        .push(methods.clone(), endpoints.clone());
     filter.deny_mut().push(methods.clone(), endpoints.clone());
     filter
         .exclude_mut()
@@ -48,9 +48,10 @@ fuzz_target!(|data: &[u8]| {
     // The raw decision surface (no normalization).
     let _ = filter.check(&method, &path);
 
-    // `deny_all()` builds a `None` profile, so `check_head` can only yield
-    // `BodyRule::None` on success; the body then carries no weight and
-    // `check_request` must agree. This pins the normalization hand-off.
+    // Body inspection is keyed on whether the effective policy permits
+    // `POST /containers/create`, so `check_head` may also yield
+    // `BodyRule::ContainerCreate` when the injected allow rule opens it. Both
+    // outcomes must route through `check_request` without panicking.
     match filter.check_head(&method, &path) {
         Ok(BodyRule::None) => {
             assert!(

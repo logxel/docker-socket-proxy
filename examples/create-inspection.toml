@@ -1,17 +1,23 @@
 # Container creation with the body inspected, not just the endpoint allowed.
 #
-# Run with `--profile container-runtime`, which is what turns on inspection of
-# `POST /containers/create`. Endpoint rules alone cannot express this: the
+# Inspection triggers on `POST /containers/create` whenever that endpoint is
+# permitted — under `--profile container-runtime` or an allowlist — because the
 # difference between a safe create and a container escape is in the body.
 #
 # Rejected regardless of what this file allows:
-#   {"Image":"x","Cmd":[],"Privileged":true}          → escapes the container
-#   {"Image":"x","Cmd":[],"CapAdd":["SYS_ADMIN"]}     → same, by capability
-#   {"Image":"x","Cmd":[],"PidMode":"host"}           → host namespace
-#   {"Image":"x"}                                     → no Cmd
+#   {"Image":"x","HostConfig":{"Privileged":true}}       → escapes the container
+#   {"Image":"x","HostConfig":{"CapAdd":["SYS_ADMIN"]}}  → same, by capability
+#   {"Image":"x","HostConfig":{"PidMode":"host"}}        → host namespace
+#   {"Image":"x","HostConfig":{"DeviceRequests":[...]}}  → GPU passthrough
+#   {"Image":"x","NetworkMode":"host"}                   → host network namespace
+#
+# The dangerous fields are rejected at the top level and nested under
+# `HostConfig` alike, since that is where Docker reads them from. `false`,
+# `[]`, `""`, and `null` are explicit unsets and pass.
 #
 # Accepted:
 #   {"Image":"worker:1","Cmd":["run"]}
+#   {"Image":"worker:1"}              → the image's default Cmd is legitimate
 #
 # Mounts are deliberately permitted; orchestrators require them, and this
 # profile is documented as trusted-caller-only.

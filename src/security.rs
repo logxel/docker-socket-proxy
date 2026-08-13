@@ -91,6 +91,12 @@ impl RuleList {
         rule.extend(methods, endpoints);
         self.push_rule(rule);
     }
+
+    /// Add a rule built from method and endpoint patterns, mirroring
+    /// [`RuleSet::add`] but keeping it independent of every rule already here.
+    pub fn add(&mut self, methods: &[&str], endpoints: &[&str]) {
+        self.push_rule(RuleSet::new(methods, endpoints));
+    }
 }
 
 const READ_METHODS: &[&str] = &["GET", "HEAD"];
@@ -163,7 +169,7 @@ const RUNTIME_ENDPOINTS: &[&str] = &[
 /// for prefix matching.
 #[derive(Debug, Clone)]
 pub struct SecurityFilter {
-    allow: RuleSet,
+    allow: RuleList,
     deny: RuleList,
     exclude: RuleList,
     profile: SecurityProfile,
@@ -179,7 +185,7 @@ impl SecurityFilter {
     /// caller rather than layered over a profile.
     pub fn deny_all() -> Self {
         Self {
-            allow: RuleSet::default(),
+            allow: RuleList::default(),
             deny: RuleList::default(),
             exclude: RuleList::default(),
             profile: SecurityProfile::None,
@@ -188,7 +194,7 @@ impl SecurityFilter {
 
     /// Create a filter for a built-in security profile.
     pub fn for_profile(profile: &SecurityProfile) -> Self {
-        let mut allow = RuleSet::default();
+        let mut allow = RuleList::default();
         let mut deny = RuleList::default();
 
         match profile {
@@ -206,6 +212,10 @@ impl SecurityFilter {
             SecurityProfile::ContainerRuntime => {
                 allow.add(READ_METHODS, READABLE_ENDPOINTS);
                 allow.add(WRITE_METHODS, RUNTIME_ENDPOINTS);
+                // The exit status of an exec the caller already created is read
+                // (GET), which the write rule cannot carry; `docker exec` fails
+                // without it.
+                allow.add(&["GET"], &["/exec/*/json"]);
 
                 let mut writes = RuleSet::new(WRITE_METHODS, MUTATING_ENDPOINTS);
                 // Denials override allowances, so the endpoints this profile
@@ -235,7 +245,7 @@ impl SecurityFilter {
     }
 
     /// Mutable access to the allow rules, for the policy loader.
-    pub fn allow_mut(&mut self) -> &mut RuleSet {
+    pub fn allow_mut(&mut self) -> &mut RuleList {
         &mut self.allow
     }
 
@@ -259,7 +269,9 @@ impl SecurityFilter {
     /// A pattern matching no real Docker endpoint is dead policy: it neither
     /// grants nor blocks anything, while reading as though it does.
     pub fn endpoint_patterns(&self) -> Vec<&str> {
-        std::iter::once(&self.allow)
+        self.allow
+            .0
+            .iter()
             .chain(self.deny.0.iter())
             .chain(self.exclude.0.iter())
             .flat_map(|rule| rule.endpoints.iter().map(String::as_str))
@@ -294,10 +306,9 @@ impl SecurityFilter {
         let path = normalize_path(path)?;
         self.check(method, &path)?;
 
-        if matches!(self.profile, SecurityProfile::ContainerRuntime)
-            && method == "POST"
-            && path == "/containers/create"
-        {
+        // Create is reachable only when some rule grants it; whatever granted
+        // it, the body still owes inspection.
+        if method == "POST" && path == "/containers/create" {
             return Ok(BodyRule::ContainerCreate);
         }
         Ok(BodyRule::None)
@@ -365,9 +376,9 @@ fn percent_decode(path: &str) -> Result<String, ProxyError> {
         let digits = bytes
             .get(i + 1..i + 3)
             .and_then(|d| std::str::from_utf8(d).ok())
-            .ok_or_else(|| ProxyError::Forbidden("truncated percent-encoding in path".into()))?;
+            .ok_or_else(|| ProxyError::BadRequest("truncated percent-encoding in path".into()))?;
         let byte = u8::from_str_radix(digits, 16)
-            .map_err(|_| ProxyError::Forbidden("invalid percent-encoding in path".into()))?;
+            .map_err(|_| ProxyError::BadRequest("invalid percent-encoding in path".into()))?;
 
         if byte == b'/' || byte == b'\\' {
             return Err(ProxyError::Forbidden(
@@ -379,7 +390,7 @@ fn percent_decode(path: &str) -> Result<String, ProxyError> {
         i += 3;
     }
 
-    String::from_utf8(out).map_err(|_| ProxyError::Forbidden("path is not valid UTF-8".into()))
+    String::from_utf8(out).map_err(|_| ProxyError::BadRequest("path is not valid UTF-8".into()))
 }
 
 /// Resolve `.` and `..` segments and collapse empty ones (RFC 3986 §5.2.4).
@@ -440,25 +451,44 @@ fn check_create_body(body: &[u8]) -> SecurityResult {
         .ok_or_else(|| ProxyError::Forbidden("container create body must be an object".into()))?;
 
     let image = object.get("Image").and_then(serde_json::Value::as_str);
-    if image.is_none() || image == Some("") || object.get("Cmd").is_none() {
+    if image.is_none() || image == Some("") {
         return Err(ProxyError::Forbidden(
-            "container create requires Image and Cmd".into(),
+            "container create requires Image".into(),
         ));
     }
 
-    for key in [
-        "Privileged",
-        "CapAdd",
-        "SecurityOpt",
-        "Devices",
-        "PidMode",
-        "IpcMode",
-        "UsernsMode",
-    ] {
-        if object.get(key).is_some_and(|value| !value.is_null()) {
-            return Err(ProxyError::Forbidden(format!(
-                "container create field is not permitted: {key}"
-            )));
+    // The daemon reads these fields from the nested HostConfig, so a body that
+    // sets them there is exactly as privileged as one that sets them at the
+    // top level; both levels are inspected.
+    for object in std::iter::once(object).chain(
+        object
+            .get("HostConfig")
+            .and_then(serde_json::Value::as_object),
+    ) {
+        for key in [
+            "Privileged",
+            "CapAdd",
+            "SecurityOpt",
+            "Devices",
+            "DeviceRequests",
+            "PidMode",
+            "IpcMode",
+            "UsernsMode",
+        ] {
+            if object.get(key).is_some_and(meaningfully_set) {
+                return Err(ProxyError::Forbidden(format!(
+                    "container create field is not permitted: {key}"
+                )));
+            }
+        }
+        if object
+            .get("NetworkMode")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|mode| mode == "host")
+        {
+            return Err(ProxyError::Forbidden(
+                "container create field is not permitted: NetworkMode".into(),
+            ));
         }
     }
 
@@ -476,6 +506,20 @@ fn check_create_body(body: &[u8]) -> SecurityResult {
     }
 
     Ok(())
+}
+
+/// Whether a field value amounts to a request, rather than an explicit unset.
+///
+/// `null`, `false`, an empty array, and an empty string all read as "do not
+/// change this" to the Docker daemon, so none of them trips an inspection.
+fn meaningfully_set(value: &serde_json::Value) -> bool {
+    match value {
+        serde_json::Value::Null => false,
+        serde_json::Value::Bool(false) => false,
+        serde_json::Value::Array(values) => !values.is_empty(),
+        serde_json::Value::String(text) => !text.is_empty(),
+        _ => true,
+    }
 }
 
 // ── Pattern matching ───────────────────────────────────────────
@@ -614,6 +658,40 @@ mod tests {
     }
 
     #[test]
+    fn container_runtime_profile_does_not_grant_writes_on_readable_prefixes() {
+        let f = SecurityFilter::for_profile(&SecurityProfile::ContainerRuntime);
+        for (method, path) in [
+            ("DELETE", "/volumes/abc"),
+            ("DELETE", "/networks/net"),
+            ("POST", "/volumes/create"),
+            ("POST", "/networks/create"),
+        ] {
+            assert!(
+                f.check(method, path).is_err(),
+                "the readable /volumes/ and /networks/ prefixes must not admit {method} {path}"
+            );
+        }
+    }
+
+    #[test]
+    fn body_inspection_follows_the_effective_policy_not_the_profile_enum() {
+        let mut f = SecurityFilter::deny_all();
+        f.allow_mut().push(
+            Some(vec!["POST".into()]),
+            Some(vec!["/containers/create".into()]),
+        );
+        assert!(
+            f.check_request(
+                "POST",
+                "/containers/create",
+                br#"{"Image":"x","HostConfig":{"Privileged":true}}"#
+            )
+            .is_err(),
+            "a create granted by allowlist is still body-inspected"
+        );
+    }
+
+    #[test]
     fn default_profile_refuses_the_exec_lifecycle() {
         let f = SecurityFilter::new();
         for (method, path) in [
@@ -632,15 +710,54 @@ mod tests {
         let body = br#"{"Image":"worker:latest","Cmd":["dagster","api"],"Labels":{"dagster/run_id":"run-1","dagster/job_name":"job"}}"#;
         assert!(f.check_request("POST", "/containers/create", body).is_ok());
         assert!(
-            f.check_request("POST", "/containers/create", br#"{"Image":"worker"}"#)
-                .is_err()
+            f.check_request("POST", "/containers/create", br#"{"Image":""}"#)
+                .is_err(),
+            "an empty Image is not a usable image"
         );
-        let privileged = br#"{"Image":"worker","Cmd":[],"Labels":{"dagster/run_id":"r","dagster/job_name":"j"},"Privileged":true}"#;
+        assert!(
+            f.check_request("POST", "/containers/create", br#"{}"#)
+                .is_err(),
+            "a missing Image is not a usable image"
+        );
+        assert!(
+            f.check_request("POST", "/containers/create", br#"{"Image":"worker"}"#)
+                .is_ok(),
+            "the image's default Cmd is legitimate"
+        );
+        let privileged = br#"{"Image":"worker","Labels":{"dagster/run_id":"r","dagster/job_name":"j"},"HostConfig":{"Privileged":true}}"#;
         assert!(
             f.check_request("POST", "/containers/create", privileged)
                 .is_err()
         );
-        let mounted = br#"{"Image":"worker","Cmd":[],"Mounts":[{"Type":"bind","Source":"/opt/knime","Target":"/opt/knime"}]}"#;
+        let pid_host = br#"{"Image":"worker","HostConfig":{"PidMode":"host"}}"#;
+        assert!(
+            f.check_request("POST", "/containers/create", pid_host)
+                .is_err()
+        );
+        let cap_add = br#"{"Image":"worker","HostConfig":{"CapAdd":["SYS_ADMIN"]}}"#;
+        assert!(
+            f.check_request("POST", "/containers/create", cap_add)
+                .is_err()
+        );
+        let gpu = br#"{"Image":"worker","HostConfig":{"DeviceRequests":[{"Driver":"nvidia","Count":1}]}}"#;
+        assert!(f.check_request("POST", "/containers/create", gpu).is_err());
+        let network_host = br#"{"Image":"worker","NetworkMode":"host"}"#;
+        assert!(
+            f.check_request("POST", "/containers/create", network_host)
+                .is_err()
+        );
+        let privileged_false =
+            br#"{"Image":"worker","Privileged":false,"HostConfig":{"Privileged":false}}"#;
+        assert!(
+            f.check_request("POST", "/containers/create", privileged_false)
+                .is_ok()
+        );
+        let cap_add_empty = br#"{"Image":"worker","HostConfig":{"CapAdd":[]}}"#;
+        assert!(
+            f.check_request("POST", "/containers/create", cap_add_empty)
+                .is_ok()
+        );
+        let mounted = br#"{"Image":"worker","Mounts":[{"Type":"bind","Source":"/opt/knime","Target":"/opt/knime"}]}"#;
         assert!(
             f.check_request("POST", "/containers/create", mounted)
                 .is_ok()
@@ -651,7 +768,7 @@ mod tests {
     fn container_removal_stays_denied_when_delete_is_allowed() {
         let mut f = filter();
         f.allow_mut()
-            .extend(Some(vec!["DELETE".into()]), Some(Vec::new()));
+            .push(Some(vec!["DELETE".into()]), Some(Vec::new()));
         assert!(f.check("DELETE", "/containers/abc").is_err());
         assert!(f.check("POST", "/containers/prune").is_err());
     }
@@ -663,7 +780,7 @@ mod tests {
         assert!(f.check("GET", "/_ping").is_err());
 
         f.allow_mut()
-            .extend(Some(vec!["GET".into()]), Some(vec!["/version".into()]));
+            .push(Some(vec!["GET".into()]), Some(vec!["/version".into()]));
         assert!(f.check("GET", "/version").is_ok());
         assert!(
             f.check("GET", "/info").is_err(),
@@ -801,14 +918,30 @@ mod tests {
 
     #[test]
     fn rejects_encoded_path_separators() {
-        assert!(normalize_path("/containers%2f..%2finfo").is_err());
-        assert!(normalize_path("/containers%5cinfo").is_err());
+        assert!(matches!(
+            normalize_path("/containers%2f..%2finfo"),
+            Err(ProxyError::Forbidden(_))
+        ));
+        assert!(matches!(
+            normalize_path("/containers%5cinfo"),
+            Err(ProxyError::Forbidden(_))
+        ));
     }
 
     #[test]
     fn rejects_malformed_percent_encoding() {
-        assert!(normalize_path("/info%").is_err());
-        assert!(normalize_path("/info%zz").is_err());
+        assert!(matches!(
+            normalize_path("/info%"),
+            Err(ProxyError::BadRequest(_))
+        ));
+        assert!(matches!(
+            normalize_path("/info%zz"),
+            Err(ProxyError::BadRequest(_))
+        ));
+        assert!(matches!(
+            normalize_path("/%ff"),
+            Err(ProxyError::BadRequest(_))
+        ));
     }
 
     #[test]

@@ -131,7 +131,8 @@ pub const METHODS: &[&str] = &["GET", "HEAD", "POST", "PUT", "DELETE"];
 /// Whether a policy pattern could ever match a real endpoint.
 ///
 /// Wildcards on either side match any single segment, since [`PATHS`] carries
-/// `*` where Docker's specification names a parameter.
+/// `*` where Docker's specification names a parameter and a policy may name a
+/// concrete value there instead.
 pub fn matches_known_path(pattern: &str) -> bool {
     PATHS.iter().any(|path| {
         if pattern.ends_with('/') {
@@ -143,7 +144,7 @@ pub fn matches_known_path(pattern: &str) -> bool {
         pattern_segments.clone().count() == path_segments.len()
             && pattern_segments
                 .zip(&path_segments)
-                .all(|(a, b)| a == "*" || b == &a)
+                .all(|(a, b)| a == "*" || b == &a || *b == "*")
     })
 }
 

@@ -103,6 +103,19 @@ where
                 );
                 denial.into_response()
             };
+            // A body-limit rejection is not a policy denial, but it is
+            // forensically meaningful and leaves the same structured trail.
+            let reject = |error: ProxyError| {
+                metrics.record_denied();
+                warn!(
+                    method = parts.method.as_str(),
+                    path = parts.uri.path(),
+                    profile = ?filter.profile(),
+                    reason = %error,
+                    "request rejected by the enforcement layer"
+                );
+                error.into_response()
+            };
 
             let rule = match filter.check_head(parts.method.as_str(), parts.uri.path()) {
                 Ok(rule) => rule,
@@ -111,14 +124,14 @@ where
 
             let body = match rule {
                 BodyRule::None => match oversized_declaration(&parts.headers, max_body_bytes) {
-                    Some(error) => return Ok(error.into_response()),
+                    Some(error) => return Ok(reject(error)),
                     None => Body::new(Limited::new(body, max_body_bytes)),
                 },
                 rule => {
                     let collected = match Limited::new(body, max_body_bytes).collect().await {
                         Ok(collected) => collected.to_bytes(),
                         Err(error) => {
-                            return Ok(body_error(error, max_body_bytes).into_response());
+                            return Ok(reject(body_error(error, max_body_bytes)));
                         }
                     };
                     if let Err(denial) = SecurityFilter::check_body(rule, &collected) {
