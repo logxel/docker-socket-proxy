@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] — 2026-08-12
+
+Streaming, `docker exec`, and observability, on top of a policy engine split
+into decision, administration, and enforcement. Two breaking changes are marked
+below.
+
 ### Added
 - Graceful shutdown on **SIGTERM** as well as SIGINT. SIGTERM is what
   `docker stop` and Kubernetes send, so shutdown draining previously never ran
@@ -106,6 +112,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 - arm64 release image build.
 
-[Unreleased]: https://github.com/logxel/docker-socket-proxy/compare/v0.1.1...HEAD
+[Unreleased]: https://github.com/logxel/docker-socket-proxy/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/logxel/docker-socket-proxy/compare/v0.1.1...v0.2.0
 [0.1.1]: https://github.com/logxel/docker-socket-proxy/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/logxel/docker-socket-proxy/releases/tag/v0.1.0
