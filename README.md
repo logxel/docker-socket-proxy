@@ -39,6 +39,7 @@ Options:
   --profile <PROFILE>        Built-in profile: default, read-only, container-runtime
   --max-body-bytes <BYTES>   Maximum request body size [default: 16777216]
   --timeout-secs <SECS>      Request timeout; 0 disables [default: 0]
+  --health-check             Probe a running proxy on --port and exit 0 if healthy
   --log-level <LEVEL>        Log level [env: RUST_LOG] [default: info]
   --log-format <FORMAT>      Log format: json, pretty [default: json]
 ```
@@ -133,7 +134,7 @@ Tracked in [`STATUS.md`](STATUS.md) with a remediation plan in [`docs/standards.
 
 - **`/containers/{id}/attach` is blocked in every profile.** `docker exec` is the supported path and works; attach has no policy allowing it.
 - **No authentication.** See [Trust Boundary](#trust-boundary).
-- **No `/metrics` or health endpoint.**
+- **No Tecnativa/linuxserver environment-variable compatibility.** Policy is configured through this project's own TOML and `DOCKER_PROXY_*` variables.
 
 ## Auditing
 
@@ -149,6 +150,27 @@ Error responses follow the Docker Engine API contract, so Docker clients deseria
 
 ```json
 {"message": "blocked endpoint: POST /containers/create"}
+```
+
+## Observability
+
+Two endpoints are answered by the proxy itself and never forwarded to Docker.
+Neither path exists in the Docker Engine API, so nothing is shadowed.
+
+| Endpoint | Purpose |
+|---|---|
+| `GET /metrics` | Prometheus text exposition: `docker_socket_proxy_requests_total{outcome="allowed"\|"denied"}` |
+| `GET /healthz` | `application/health+json`; `200` when the Docker socket accepts a connection, `503` otherwise |
+
+**Both bypass the security policy and are unauthenticated**, like every other
+endpoint on this port — see [Trust Boundary](#trust-boundary). They expose
+aggregate counts and socket reachability, nothing about individual requests.
+
+The image ships a `HEALTHCHECK`. Because `scratch` has no shell to call
+`/healthz` with, the binary probes itself:
+
+```bash
+docker-socket-proxy --health-check    # exits 0 when healthy, 1 otherwise
 ```
 
 ## Standards

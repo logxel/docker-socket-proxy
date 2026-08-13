@@ -28,8 +28,8 @@ Measured on the host `x86_64-unknown-linux-gnu` target with the release profile
 these as relative figures.
 
 ```
-release binary          1,842,928 bytes  (1.76 MiB)   budget 8 MB → ~77% headroom
-image                   1,965,408 bytes  (1.87 MiB)   budget 10 MB
+release binary          1,891,752 bytes  (1.80 MiB)   budget 8 MB → ~76% headroom
+image                   2,014,592 bytes  (1.92 MiB)   budget 10 MB
 dependency tree               121 crates              budget 130
 ```
 
@@ -180,7 +180,9 @@ CI · digest-pinned builder with OCI labels.
 1. **Streaming and 101-upgrade passthrough** — *done*. Bodies relay frame by
    frame and a 101 splices both connections, so `/events`, follow-mode logs,
    `/build`, and `docker exec` all work
-2. **`/metrics` and health endpoint**
+2. **`/metrics` and health endpoint** — *done*. Prometheus exposition over
+   `AtomicU64`, `application/health+json`, and a `--health-check` probe for the
+   image's `HEALTHCHECK`
 3. **Tecnativa env-var compatibility shim** — adoption unlock
 4. **NIST 800-190 / CIS control mapping** in the security docs
 5. **`tls` feature** for mTLS

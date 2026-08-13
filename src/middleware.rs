@@ -13,6 +13,7 @@
 //!   buffered or streamed.
 
 use std::pin::Pin;
+use std::sync::Arc;
 use std::task::{Context, Poll};
 
 use axum::body::Body;
@@ -24,6 +25,7 @@ use tower::{Layer, Service};
 use tracing::warn;
 
 use crate::error::ProxyError;
+use crate::observability::Metrics;
 use crate::security::{BodyRule, SecurityFilter};
 
 /// Applies [`SecurityFilter`] to every request.
@@ -31,13 +33,15 @@ use crate::security::{BodyRule, SecurityFilter};
 pub struct SecurityLayer {
     filter: SecurityFilter,
     max_body_bytes: usize,
+    metrics: Arc<Metrics>,
 }
 
 impl SecurityLayer {
-    pub fn new(filter: SecurityFilter, max_body_bytes: usize) -> Self {
+    pub fn new(filter: SecurityFilter, max_body_bytes: usize, metrics: Arc<Metrics>) -> Self {
         Self {
             filter,
             max_body_bytes,
+            metrics,
         }
     }
 }
@@ -50,6 +54,7 @@ impl<S> Layer<S> for SecurityLayer {
             inner,
             filter: self.filter.clone(),
             max_body_bytes: self.max_body_bytes,
+            metrics: Arc::clone(&self.metrics),
         }
     }
 }
@@ -59,6 +64,7 @@ pub struct SecurityService<S> {
     inner: S,
     filter: SecurityFilter,
     max_body_bytes: usize,
+    metrics: Arc<Metrics>,
 }
 
 impl<S> Service<Request> for SecurityService<S>
@@ -81,11 +87,13 @@ where
         let ready_inner = std::mem::replace(&mut self.inner, pending);
         let filter = self.filter.clone();
         let max_body_bytes = self.max_body_bytes;
+        let metrics = Arc::clone(&self.metrics);
 
         Box::pin(async move {
             let mut inner = ready_inner;
             let (parts, body) = request.into_parts();
             let audit = |denial: ProxyError| {
+                metrics.record_denied();
                 warn!(
                     method = parts.method.as_str(),
                     path = parts.uri.path(),
@@ -120,6 +128,7 @@ where
                 }
             };
 
+            metrics.record_allowed();
             inner.call(Request::from_parts(parts, body)).await
         })
     }
@@ -168,9 +177,19 @@ mod tests {
 
     /// Answers with the body length, so a test can tell what actually arrived.
     fn router_with(filter: SecurityFilter, max_body_bytes: usize) -> Router {
-        Router::new()
+        metered_router(filter, max_body_bytes).0
+    }
+
+    fn metered_router(filter: SecurityFilter, max_body_bytes: usize) -> (Router, Arc<Metrics>) {
+        let metrics = Arc::new(Metrics::default());
+        let router = Router::new()
             .fallback(any(async |body: Bytes| body.len().to_string()))
-            .layer(SecurityLayer::new(filter, max_body_bytes))
+            .layer(SecurityLayer::new(
+                filter,
+                max_body_bytes,
+                Arc::clone(&metrics),
+            ));
+        (router, metrics)
     }
 
     fn router(max_body_bytes: usize) -> Router {
@@ -249,6 +268,22 @@ mod tests {
 
         let body = response.into_body().collect().await.unwrap().to_bytes();
         assert_eq!(body.as_ref(), b"64", "the whole body reached the handler");
+    }
+
+    #[tokio::test]
+    async fn counts_each_outcome_once() {
+        let (router, metrics) = metered_router(SecurityFilter::new(), 1024);
+        assert_eq!(
+            send(router.clone(), "GET", "/version", "").await,
+            StatusCode::OK
+        );
+        assert_eq!(
+            send(router, "POST", "/containers/create", "{}").await,
+            StatusCode::FORBIDDEN
+        );
+
+        assert!(metrics.render().contains(r#"{outcome="allowed"} 1"#));
+        assert!(metrics.render().contains(r#"{outcome="denied"} 1"#));
     }
 
     #[tokio::test]

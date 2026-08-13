@@ -46,6 +46,13 @@ pub struct Config {
     #[arg(long, env = "DOCKER_PROXY_TIMEOUT_SECS", default_value = "0")]
     pub timeout_secs: u64,
 
+    /// Probe a running proxy on `--port` and exit 0 if it reports healthy.
+    ///
+    /// For a container `HEALTHCHECK`: the `scratch` image has no shell or curl
+    /// to call `/healthz` with.
+    #[arg(long)]
+    pub health_check: bool,
+
     /// Log level (trace, debug, info, warn, error).
     #[arg(long, env = "RUST_LOG", default_value = "info")]
     pub log_level: String,

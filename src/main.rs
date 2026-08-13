@@ -25,6 +25,14 @@ fn main() {
     };
 
     rt.block_on(async {
+        if config.health_check {
+            if let Err(e) = docker_socket_proxy::observability::probe(config.port).await {
+                tracing::error!(port = config.port, reason = %e, "health check failed");
+                std::process::exit(1);
+            }
+            return;
+        }
+
         if let Err(e) = docker_socket_proxy::proxy::serve(config).await {
             tracing::error!(%e, "proxy server exited with error");
             std::process::exit(1);

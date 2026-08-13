@@ -55,6 +55,11 @@ COPY --from=builder /docker-socket-proxy /docker-socket-proxy
 
 EXPOSE 2375
 
+# The binary probes itself: there is no shell or curl here to call /healthz
+# with. It reads DOCKER_PROXY_PORT, so a custom port needs no change here.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=2s --retries=3 \
+    CMD ["/docker-socket-proxy", "--health-check"]
+
 # No USER directive, deliberately. The proxy's only job is to open
 # /var/run/docker.sock, which is typically root:docker 0660, so a fixed
 # unprivileged UID would fail on most hosts and return 502 for every request.
