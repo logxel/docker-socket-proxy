@@ -88,7 +88,8 @@ the metric is in [`docs/standards.md`](docs/standards.md#selection-criteria).
 | Dependency tree | 125 crates | < 130 |
 
 `--no-default-features` drops the YAML parser: 1.79 MiB and 115 crates, so the
-`yaml` feature costs 458 KiB and 10 crates.
+`yaml` feature costs 458 KiB and 10 crates. Both are released as images —
+2.33 MiB and 1.88 MiB — built in parallel from one Dockerfile via `VARIANT`.
 
 ## Decisions Log
 | Date | Decision | Choice | Rationale |

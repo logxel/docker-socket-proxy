@@ -30,6 +30,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`yaml` build feature**, on by default. `--no-default-features` drops the
   parser for a build 458 KiB and 10 crates smaller; a YAML allowlist given to
   such a build is refused by name rather than silently ignored.
+- **A `-minimal` image variant** published alongside the default one, built
+  without the YAML parser (1.88 MiB against 2.33 MiB). Both carry the same tags
+  with a `-minimal` suffix, and an `io.logxel.features` label so a
+  digest-pinned image still says which it is.
 - Worked examples for create-body inspection, section-style YAML grants,
   environment-only configuration, and two compose deployments — each asserted by
   `tests/examples.rs`, so a shipped example cannot drift from what it documents.

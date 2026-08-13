@@ -62,10 +62,30 @@ jobs:
 
   # ── Build & Push Multi-Arch Image ─────────────────────────────
   build-push:
-    name: Build & Push Image
+    name: Build & Push Image (${{ matrix.variant }})
     needs: [check, test, supply-chain]
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
+    strategy:
+      # Both variants are published independently; one failing should not
+      # cancel a release of the other.
+      fail-fast: false
+      matrix:
+        include:
+          # The default: bare tags and :latest point here, and it is also
+          # reachable by an explicit -minimal tag so a deployment can pin the
+          # feature set rather than inherit whichever one is default.
+          - variant: minimal
+            flavor: latest=true
+            alias_flavor: |
+              latest=true
+              suffix=-minimal,onlatest=true
+          # YAML costs 458 KiB and 10 crates, so it is opt-in by tag.
+          - variant: full
+            flavor: |
+              latest=true
+              suffix=-yaml,onlatest=true
+            alias_flavor: ""
     permissions:
       contents: read
       packages: write
@@ -95,11 +115,39 @@ jobs:
         uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
         with:
           images: ghcr.io/logxel/docker-socket-proxy
+          flavor: ${{ matrix.flavor }}
           tags: |
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
             type=semver,pattern={{major}}
             type=sha,prefix=sha-
+
+      # A second tag set for the same image, so the default variant answers to
+      # its own name as well as to the bare tags.
+      - name: Docker metadata (explicit alias)
+        id: alias
+        if: matrix.alias_flavor != ''
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
+        with:
+          images: ghcr.io/logxel/docker-socket-proxy
+          flavor: ${{ matrix.alias_flavor }}
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=semver,pattern={{major}}
+            type=sha,prefix=sha-
+
+      - name: Collect tags
+        id: tags
+        env:
+          PRIMARY: ${{ steps.meta.outputs.tags }}
+          ALIAS: ${{ steps.alias.outputs.tags }}
+        run: |
+          {
+            echo 'value<<TAGS_EOF'
+            printf '%s\n%s\n' "$PRIMARY" "$ALIAS" | grep -v '^[[:space:]]*$'
+            echo 'TAGS_EOF'
+          } >> "$GITHUB_OUTPUT"
 
       - name: Build and push
         id: build
@@ -110,14 +158,18 @@ jobs:
           build-args: |
             VERSION=${{ steps.meta.outputs.version }}
             REVISION=${{ github.sha }}
+            VARIANT=${{ matrix.variant }}
           push: true
-          tags: ${{ steps.meta.outputs.tags }}
+          tags: ${{ steps.tags.outputs.value }}
           labels: ${{ steps.meta.outputs.labels }}
           annotations: ${{ steps.meta.outputs.annotations }}
           sbom: true
           provenance: mode=max
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          # Scoped per variant: a shared scope would have each build evict the
+          # other's layers, since the feature set changes the dependency graph
+          # and so every cargo layer after it.
+          cache-from: type=gha,scope=${{ matrix.variant }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.variant }}
 
       # Attests the manifest digest rather than a tag, since tags move.
       - name: Attest build provenance

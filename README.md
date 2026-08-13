@@ -89,6 +89,20 @@ cargo build --release --no-default-features   # TOML allowlists only
 
 A YAML allowlist given to a build without it is refused by name, not silently ignored.
 
+Both variants are published on every release. **The default image is the minimal one** — YAML is opt-in by tag, since it costs 458 KiB and 10 crates that most deployments never use:
+
+| Tag | Allowlist formats | Image |
+|---|---|---|
+| `:0.2.0`, `:0.2`, `:0`, `:latest` | TOML | 1.88 MiB |
+| `:0.2.0-minimal`, `:0.2-minimal`, `:0-minimal`, `:latest-minimal` | TOML | 1.88 MiB |
+| `:0.2.0-yaml`, `:0.2-yaml`, `:0-yaml`, `:latest-yaml` | TOML, YAML | 2.33 MiB |
+
+The first two rows are the same image; the `-minimal` tags exist so a deployment can pin the feature set rather than inherit whichever one is default.
+
+**A `.yaml` allowlist needs a `-yaml` tag.** On the default image it is refused by name at startup and the proxy will not run.
+
+Pulled by digest, `docker inspect` reports which you have under the `io.logxel.features` label.
+
 ### Example Allowlist
 
 ```toml
@@ -110,7 +124,7 @@ Worked examples, each covered by [`tests/examples.rs`](tests/examples.rs):
 | [`container-runtime.toml`](examples/container-runtime.toml) | TOML | A complete workload-launcher policy |
 | [`create-inspection.toml`](examples/create-inspection.toml) | TOML | Which create bodies are refused, and why endpoint rules cannot say it |
 | [`tecnativa-equivalent.toml`](examples/tecnativa-equivalent.toml) | TOML | The section variables written out, under `--profile none` |
-| [`sections-read-only.yaml`](examples/sections-read-only.yaml) | YAML | Section-style grants, with prefix rules narrowed by `exclude` |
+| [`sections-read-only.yaml`](examples/sections-read-only.yaml) | YAML | Section-style grants, with prefix rules narrowed by `exclude` — needs a `-yaml` image |
 | [`env-modifiers.env`](examples/env-modifiers.env) | env | Policy set entirely through the environment |
 | [`compose/tecnativa-compat.yml`](examples/compose/tecnativa-compat.yml) | compose | Drop-in replacement using the section variables |
 | [`compose/container-runtime.yml`](examples/compose/container-runtime.yml) | compose | Deployment with an allowlist, health check, and loopback-only port |
