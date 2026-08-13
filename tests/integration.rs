@@ -222,7 +222,11 @@ async fn handles_100_simultaneous_requests_with_per_response_integrity() {
     });
 
     let responses: Vec<_> = futures_util::future::join_all(requests).await;
-    assert_eq!(responses.len(), ALLOWED + DENIED, "no request may be dropped");
+    assert_eq!(
+        responses.len(),
+        ALLOWED + DENIED,
+        "no request may be dropped"
+    );
 
     let ok = responses
         .iter()
