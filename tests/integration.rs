@@ -51,9 +51,18 @@ async fn mock_handler(
         .map(|k| k.as_str().to_ascii_lowercase())
         .collect();
 
+    // Echo the caller-supplied id so a test can match each response to the
+    // request that produced it; a crossed connection would carry the wrong one.
+    let request_id = req
+        .headers()
+        .get("x-request-id")
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_owned);
+
     let body = serde_json::json!({
         "Version": "20.10.0-mock",
         "ApiVersion": "1.41",
+        "RequestId": request_id,
         "ReceivedHeaders": received,
     });
 
@@ -171,4 +180,126 @@ async fn returns_502_when_docker_unreachable() {
 
     let resp = router.oneshot(req).await.unwrap();
     assert_eq!(resp.status(), StatusCode::BAD_GATEWAY);
+}
+
+/// Fire 100 requests concurrently through one router and prove each response
+/// answers its own request: every allowed GET must come back with the mock
+/// body, every denied POST with the Docker-shaped 403. No request may be
+/// dropped or served twice.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn handles_100_simultaneous_requests_with_per_response_integrity() {
+    let socket = std::env::temp_dir().join("test-proxy-parallel-100.sock");
+    spawn_mock(socket.clone()).await;
+
+    let router = test_router(socket, SecurityFilter::new());
+    const ALLOWED: usize = 50;
+    const DENIED: usize = 50;
+
+    // Every future owns a clone of the same router; join_all polls them all
+    // in flight rather than awaiting one request at a time.
+    let requests = (0..ALLOWED + DENIED).map(|i| {
+        let router = router.clone();
+        async move {
+            let req = if i < ALLOWED {
+                Request::builder()
+                    .method(Method::GET)
+                    .uri(if i % 2 == 0 { "/version" } else { "/info" })
+                    .body(Body::empty())
+                    .unwrap()
+            } else {
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/containers/create")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(r#"{"Image":"nginx"}"#))
+                    .unwrap()
+            };
+            let resp = router.oneshot(req).await.unwrap();
+            let status = resp.status();
+            let body = resp.into_body().collect().await.unwrap().to_bytes();
+            (i, status, body)
+        }
+    });
+
+    let responses: Vec<_> = futures_util::future::join_all(requests).await;
+    assert_eq!(responses.len(), ALLOWED + DENIED, "no request may be dropped");
+
+    let ok = responses
+        .iter()
+        .filter(|(_, status, _)| *status == StatusCode::OK)
+        .count();
+    let forbidden = responses
+        .iter()
+        .filter(|(_, status, _)| *status == StatusCode::FORBIDDEN)
+        .count();
+    assert_eq!(ok, ALLOWED, "every allowed GET must return 200");
+    assert_eq!(forbidden, DENIED, "every denied POST must return 403");
+
+    for (i, status, body) in responses {
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        if i < ALLOWED {
+            assert_eq!(status, StatusCode::OK, "response {i} corrupted");
+            assert_eq!(json["Version"], "20.10.0-mock", "response {i} body");
+            assert_eq!(json["ApiVersion"], "1.41", "response {i} body");
+        } else {
+            assert_eq!(status, StatusCode::FORBIDDEN, "response {i} corrupted");
+            let message = json["message"].as_str().expect("message field");
+            assert!(message.contains("/containers/create"), "got: {message}");
+            assert!(json.get("error").is_none(), "response {i} error shape");
+            assert!(json.get("status").is_none(), "response {i} error shape");
+        }
+    }
+}
+
+/// 50 concurrent requests each carrying a unique X-Request-Id, all through the
+/// same router. The mock echoes the id back, so any crossed or bled response
+/// would be caught by the mismatch between the id a response carries and the
+/// one its index expects.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn parallel_requests_keep_their_own_headers() {
+    let socket = std::env::temp_dir().join("test-proxy-parallel-headers.sock");
+    spawn_mock(socket.clone()).await;
+
+    let router = test_router(socket, SecurityFilter::new());
+    const CONCURRENT: usize = 50;
+
+    let requests = (0..CONCURRENT).map(|i| {
+        let router = router.clone();
+        async move {
+            let request_id = format!("req-{i:04}");
+            let req = Request::builder()
+                .method(Method::GET)
+                .uri("/version")
+                .header("X-Request-Id", &request_id)
+                .body(Body::empty())
+                .unwrap();
+            let resp = router.oneshot(req).await.unwrap();
+            let status = resp.status();
+            let body = resp.into_body().collect().await.unwrap().to_bytes();
+            (i, status, body)
+        }
+    });
+
+    let responses: Vec<_> = futures_util::future::join_all(requests).await;
+    assert_eq!(responses.len(), CONCURRENT, "no request may be dropped");
+
+    for (i, status, body) in responses {
+        assert_eq!(status, StatusCode::OK, "response {i} corrupted");
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(
+            json["RequestId"],
+            format!("req-{i:04}"),
+            "response {i} crossed with another request"
+        );
+        let seen: Vec<&str> = json["ReceivedHeaders"]
+            .as_array()
+            .expect("ReceivedHeaders")
+            .iter()
+            .filter_map(serde_json::Value::as_str)
+            .collect();
+        assert!(
+            seen.contains(&"x-request-id"),
+            "response {i} lost its own header: {seen:?}"
+        );
+    }
 }

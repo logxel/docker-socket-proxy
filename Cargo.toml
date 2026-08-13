@@ -33,6 +33,9 @@ yaml = ["dep:serde-saphyr"]
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }
 serde-saphyr = "1.0"
+# join_all needs only std/alloc, not the async-await macros; scoped so the
+# dev tree adds no new crates over what axum/hyper-util/tower already pull.
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
 
 [lints.rust]
 unsafe_code = "forbid"
