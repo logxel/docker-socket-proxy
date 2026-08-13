@@ -35,7 +35,7 @@ docker-socket-proxy [OPTIONS]
 Options:
   --port <PORT>              TCP port to listen on [env: DOCKER_PROXY_PORT] [default: 2375]
   --socket <PATH>            Docker Unix socket path [env: DOCKER_SOCKET] [default: /var/run/docker.sock]
-  --allowlist <FILE>         Path to TOML allowlist configuration file
+  --allowlist <FILE>         Path to TOML or YAML allowlist file (.toml, .yaml, .yml)
   --profile <PROFILE>        Built-in profile: default, read-only, container-runtime
   --max-body-bytes <BYTES>   Maximum request body size [default: 16777216]
   --timeout-secs <SECS>      Request timeout; 0 disables [default: 0]
@@ -52,7 +52,9 @@ follow-mode logs legitimately block for as long as the workload runs. Set it
 where the permitted endpoints are all short-lived.
 
 An `--allowlist` file that cannot be read or parsed is fatal. The proxy will not
-start on profile defaults you did not ask for.
+start on profile defaults you did not ask for. The parser is chosen by
+extension — `.toml`, `.yaml`, or `.yml` — and any other extension is refused
+rather than guessed at.
 
 ### Profiles
 
@@ -72,7 +74,15 @@ methods = ["POST"]
 
 Rules are merged with the selected profile. `allow` and `deny` are additive aliases matching common Docker socket proxy terminology. Prefer `include` and `exclude` for explicit modifiers; `exclude` always wins and is applied last.
 
-Complete profile example: [`examples/container-runtime.toml`](examples/container-runtime.toml).
+Worked examples, each covered by [`tests/examples.rs`](tests/examples.rs):
+
+| File | Shows |
+|---|---|
+| [`container-runtime.toml`](examples/container-runtime.toml) | A complete workload-launcher policy |
+| [`create-inspection.toml`](examples/create-inspection.toml) | Which create bodies are refused, and why endpoint rules cannot say it |
+| [`sections-read-only.yaml`](examples/sections-read-only.yaml) | Section-style grants as YAML, with prefix rules narrowed by `exclude` |
+| [`compose/tecnativa-compat.yml`](examples/compose/tecnativa-compat.yml) | Drop-in replacement using the section variables |
+| [`compose/container-runtime.yml`](examples/compose/container-runtime.yml) | Deployment with an allowlist, health check, and loopback-only port |
 
 ```toml
 [include]
@@ -93,7 +103,31 @@ DOCKER_PROXY_ALLOW_METHODS=GET,POST \
 docker-socket-proxy
 ```
 
-Supported variables are `DOCKER_PROXY_ALLOW_ENDPOINTS`, `DOCKER_PROXY_INCLUDE_ENDPOINTS`, `DOCKER_PROXY_DENY_ENDPOINTS`, `DOCKER_PROXY_EXCLUDE_ENDPOINTS`, and corresponding `*_METHODS` variables. Environment rules are merged after TOML rules; exclusions remain decisive.
+Supported variables are `DOCKER_PROXY_ALLOW_ENDPOINTS`, `DOCKER_PROXY_INCLUDE_ENDPOINTS`, `DOCKER_PROXY_DENY_ENDPOINTS`, `DOCKER_PROXY_EXCLUDE_ENDPOINTS`, and corresponding `*_METHODS` variables. Environment rules are merged after file rules; exclusions remain decisive.
+
+### Drop-in Compatibility
+
+A compose file written for [Tecnativa's socket proxy](https://github.com/Tecnativa/docker-socket-proxy) runs here unchanged:
+
+```yaml
+services:
+  proxy:
+    image: ghcr.io/logxel/docker-socket-proxy:0.2.0
+    environment:
+      CONTAINERS: 1
+      IMAGES: 1
+      POST: 1
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+```
+
+Section variables (`AUTH`, `BUILD`, `COMMIT`, `CONFIGS`, `CONTAINERS`, `DISTRIBUTION`, `EVENTS`, `EXEC`, `GRPC`, `IMAGES`, `INFO`, `NETWORKS`, `NODES`, `PING`, `PLUGINS`, `SECRETS`, `SERVICES`, `SESSION`, `SWARM`, `SYSTEM`, `TASKS`, `VERSION`, `VOLUMES`) grant one API section each. `EVENTS`, `PING`, and `VERSION` are granted unless set to `0`. `ALLOW_RESTARTS`, `ALLOW_START`, `ALLOW_STOP`, `ALLOW_PAUSE`, and `ALLOW_UNPAUSE` grant single container operations without opening `/containers`. `POST` gates every write; `GET` and `HEAD` pass regardless.
+
+Only `1`, `true`, `yes`, and `on` enable a variable, so a typo fails closed.
+
+These variables describe a complete policy, so they **replace** the profile defaults rather than merge with them — `CONTAINERS=1` grants containers and nothing else. Setting them alongside `--profile` is refused rather than silently resolved. `DOCKER_PROXY_*` modifiers and an `--allowlist` file still apply on top.
+
+Verdicts are checked against the reference implementation directly; see `compatibility_filter` in [`src/policy.rs`](src/policy.rs).
 
 ## Security Model
 

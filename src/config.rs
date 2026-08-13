@@ -23,7 +23,9 @@ pub struct Config {
     #[arg(long, env = "DOCKER_SOCKET", default_value = "/var/run/docker.sock")]
     pub socket: PathBuf,
 
-    /// Path to a TOML allowlist configuration file, merged over the profile.
+    /// Path to a TOML or YAML allowlist file, merged over the profile.
+    ///
+    /// The format is taken from the extension: `.toml`, `.yaml`, or `.yml`.
     #[arg(long, env = "DOCKER_PROXY_ALLOWLIST")]
     pub allowlist: Option<PathBuf>,
 

@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **YAML allowlists.** `--allowlist` accepts `.yaml` and `.yml` alongside
+  `.toml`, with the parser chosen by extension. An unrecognised extension is
+  refused rather than guessed at, so a mistyped name cannot quietly parse as the
+  wrong format and yield a policy nobody wrote.
+- **Compatibility with the section variables** other Docker socket proxies use:
+  `CONTAINERS`, `IMAGES`, `POST`, `ALLOW_START`, and the rest configure the
+  filter directly, so an existing compose file runs unchanged. They describe a
+  whole policy, so they replace the profile defaults instead of layering over
+  them; setting them alongside `--profile` is refused rather than silently
+  resolved. Verdicts are checked differentially against the reference
+  implementation.
+- Worked examples for create-body inspection, section-style YAML grants, and
+  two compose deployments — each asserted by `tests/examples.rs`, so a shipped
+  example cannot drift from what it documents.
+
+### Changed
+- **`deny` and `exclude` now hold independent rules.** Each source contributed
+  to one shared rule, and a rule matches on method *and* endpoint, so excluding
+  all `POST` in a file and excluding `/secrets` in the environment collapsed
+  into "exclude `POST /secrets`" — leaving `GET /secrets` reachable. Each source
+  is now evaluated on its own. **Breaking** for any policy that relied on two
+  sources intersecting.
+- **`read-only` now denies writes on every endpoint**, not only on the mutating
+  ones, so an `allow` rule added on top cannot reopen one.
+
 ## [0.2.0] — 2026-08-12
 
 Streaming, `docker exec`, and observability, on top of a policy engine split
