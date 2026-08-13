@@ -6,7 +6,7 @@
 
 services:
   docker-socket-proxy:
-    image: ghcr.io/logxel/docker-socket-proxy:0.3.0
+    image: ghcr.io/logxel/docker-socket-proxy:0.3.1
     command:
       - --profile=container-runtime
       - --allowlist=/etc/proxy/create-inspection.toml
