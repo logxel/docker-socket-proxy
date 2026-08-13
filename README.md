@@ -3,6 +3,7 @@
 [![CI/CD](https://github.com/logxel/docker-socket-proxy/actions/workflows/ci.yml/badge.svg)](https://github.com/logxel/docker-socket-proxy/actions/workflows/ci.yml)
 [![Scorecard](https://github.com/logxel/docker-socket-proxy/actions/workflows/scorecard.yml/badge.svg)](https://github.com/logxel/docker-socket-proxy/actions/workflows/scorecard.yml)
 [![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/logxel/docker-socket-proxy/badge)](https://scorecard.dev/viewer/?uri=github.com/logxel/docker-socket-proxy)
+[![OpenSSF Best Practices](https://www.bestpractices.dev/projects/14049/badge)](https://www.bestpractices.dev/projects/14049)
 
 A secure, minimal Docker socket proxy written in Rust. Exposes the Docker API over TCP while filtering dangerous endpoints.
 
