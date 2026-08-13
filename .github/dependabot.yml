@@ -1,26 +1,48 @@
 version: 2
 
+# Catch-all groups: every ecosystem opens at most one version PR and one
+# security PR. Security stays separate so an advisory fix is never held up
+# behind a routine bump that fails CI.
 updates:
-  # Grouped so routine bumps arrive as one PR rather than a stream.
-  - package-ecosystem: cargo
-    directory: /
+  - package-ecosystem: "cargo"
+    directory: "/"
     schedule:
-      interval: weekly
-    open-pull-requests-limit: 5
+      interval: "weekly"
     groups:
-      patch-and-minor:
-        update-types:
-          - minor
-          - patch
+      cargo-updates:
+        applies-to: "version-updates"
+        patterns:
+          - "*"
+      cargo-security:
+        applies-to: "security-updates"
+        patterns:
+          - "*"
 
   # Actions are SHA-pinned; without this, pinning becomes freezing.
-  - package-ecosystem: github-actions
-    directory: /
+  - package-ecosystem: "github-actions"
+    directory: "/"
     schedule:
-      interval: weekly
-    open-pull-requests-limit: 5
+      interval: "weekly"
+    groups:
+      github-actions-updates:
+        applies-to: "version-updates"
+        patterns:
+          - "*"
+      github-actions-security:
+        applies-to: "security-updates"
+        patterns:
+          - "*"
 
-  - package-ecosystem: docker
-    directory: /
+  - package-ecosystem: "docker"
+    directory: "/"
     schedule:
-      interval: weekly
+      interval: "weekly"
+    groups:
+      docker-updates:
+        applies-to: "version-updates"
+        patterns:
+          - "*"
+      docker-security:
+        applies-to: "security-updates"
+        patterns:
+          - "*"
