@@ -1,0 +1,6 @@
+# Fuzz-crate build artifacts (separate from the root /target)
+/target/
+
+# cargo-fuzz runtime output
+/corpus/
+/artifacts/

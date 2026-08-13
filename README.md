@@ -271,6 +271,35 @@ docker-socket-proxy --health-check    # exits 0 when healthy, 1 otherwise
 
 Conformance targets, adoption decisions, and their measured dependency cost are documented in [`docs/standards.md`](docs/standards.md). The target state is described in [`AGENTS.md`](AGENTS.md).
 
+## Scorecard
+
+[OpenSSF Scorecard](https://scorecard.dev/viewer/?uri=github.com/logxel/docker-socket-proxy)
+grades repository practices rather than code. It runs weekly and on `main`
+pushes via [`.github/workflows/scorecard.yml`](.github/workflows/scorecard.yml).
+
+Code-fixable checks, in place:
+
+- **SAST** — CodeQL for Rust runs from
+  [`.github/workflows/codeql.yml`](.github/workflows/codeql.yml) (`language: rust`).
+- **Fuzzing** — a cargo-fuzz / libfuzzer-sys harness in [`fuzz/`](fuzz/) targets the
+  request-path decision surface and policy parsing (`path_normalizer`,
+  `policy_parse`), exercised by a scheduled job in
+  [`.github/workflows/fuzz.yml`](.github/workflows/fuzz.yml).
+
+The remaining checks need repository or account settings, not code:
+
+- **Code-Review** — a PR review policy that gates merges on approved reviews.
+- **Branch-Protection** — branch-protection rules enabled on `main`.
+- **Maintained** — time-gated; the repository ages into this one.
+- **Contributors** — contributors from more than one organization.
+- **Signed-Releases** — a published release; signing is already wired into the
+  release workflow.
+- **CII-Best-Practices** — self-certification at
+  [bestpractices.dev](https://www.bestpractices.dev).
+
+The numeric score refreshes only when the scorecard action re-runs — weekly, or
+on a `main` push.
+
 ## Contributing
 
 Security issues: see [`SECURITY.md`](SECURITY.md). Release history: [`CHANGELOG.md`](CHANGELOG.md).

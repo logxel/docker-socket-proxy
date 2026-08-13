@@ -1,0 +1,38 @@
+name: CodeQL
+
+# Static analysis finds defects independent of any code change, so it runs
+# weekly as well as on default-branch pushes and pull requests.
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    - cron: '42 3 * * 0'
+
+# Least privilege by default; jobs opt into more where they need it.
+permissions:
+  contents: read
+
+jobs:
+  analyze:
+    name: Analyze (Rust)
+    runs-on: ubuntu-latest
+    # Uploading the SARIF results requires security-events write access.
+    permissions:
+      security-events: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@5595ccaf912efad79be6eef63a5619ff05969be3 # v4.37.6
+        with:
+          languages: rust
+
+      # Autobuild runs `cargo build`; the repo is a single crate with no
+      # workspace, so no bespoke build step is needed.
+      - name: Autobuild
+        uses: github/codeql-action/autobuild@5595ccaf912efad79be6eef63a5619ff05969be3 # v4.37.6
+
+      - name: Perform CodeQL analysis
+        uses: github/codeql-action/analyze@5595ccaf912efad79be6eef63a5619ff05969be3 # v4.37.6

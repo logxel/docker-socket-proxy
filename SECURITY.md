@@ -45,10 +45,5 @@ These are documented properties of the current design, not vulnerabilities. See
 
 ## Known Gaps
 
-Tracked openly in [`STATUS.md`](STATUS.md) rather than treated as embargoed
-issues, since each is a documented limitation rather than an exploitable
-regression:
-
-- Policy denials produce no audit record
-- No request timeout or body-size limit
-- Path normalization does not yet implement RFC 3986 §6
+Remaining limitations are tracked in [`STATUS.md`](STATUS.md) rather than
+restated here or treated as embargoed issues.

@@ -1,0 +1,34 @@
+[package]
+name = "docker-socket-proxy-fuzz"
+version = "0.0.0"
+edition = "2024"
+publish = false
+license = "MIT"
+
+# The root crate declares no `[workspace]`, so this standalone workspace keeps
+# the harness out of the root build entirely. The root Cargo.toml and Cargo.lock
+# never see it, which is what protects the <130-crate / <8 MB binary budget.
+[workspace]
+members = ["."]
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+toml = "1"
+docker-socket-proxy = { path = ".." }
+
+[[bin]]
+name = "path_normalizer"
+path = "fuzz_targets/path_normalizer.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "policy_parse"
+path = "fuzz_targets/policy_parse.rs"
+test = false
+doc = false
+bench = false
