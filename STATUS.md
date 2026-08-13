@@ -63,6 +63,9 @@ is otherwise silent. Shipped patterns are checked by test, not warning.
 asserting the shipped examples still behave as documented, 3 checking policy
 patterns against the real Docker Engine API surface).
 
+The OpenSSF Scorecard posture — checks addressed and those still outstanding —
+is documented in the README's [Scorecard](README.md#scorecard) section.
+
 ## Known Gaps
 Ordered by the waves in [`docs/standards.md`](docs/standards.md#next-steps).
 Identifiers are stable; closed gaps are not renumbered.
