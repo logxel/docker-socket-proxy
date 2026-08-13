@@ -1,0 +1,37 @@
+# cargo-deny policy. Run locally with `cargo deny check all`.
+
+[graph]
+# Only the shipped targets, so dependencies for other platforms are not counted.
+targets = [
+    { triple = "x86_64-unknown-linux-musl" },
+    { triple = "aarch64-unknown-linux-musl" },
+]
+
+[advisories]
+version = 2
+# Add an entry only with a comment explaining why it is not exploitable here.
+ignore = []
+
+[licenses]
+version = 2
+# Exactly the licences present in the tree, so any new one fails CI and forces
+# a deliberate review.
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "BSD-3-Clause",
+    "Unicode-3.0",
+]
+confidence-threshold = 0.8
+
+[bans]
+# Counts against the size budget in AGENTS.md, but is rarely ours to fix.
+multiple-versions = "warn"
+# Wildcard requirements make builds unreproducible.
+wildcards = "deny"
+deny = []
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]

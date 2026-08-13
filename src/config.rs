@@ -1,13 +1,11 @@
 //! Application configuration.
 //!
-//! Configuration is parsed from CLI arguments and environment variables
-//! using `clap`. Every field has a sensible default.
+//! Parsed from CLI arguments and environment variables via `clap`. Every field
+//! has a default.
 //!
 //! # Contract
-//! - **Pre-condition**: `Config::parse()` must succeed; invalid values cause
-//!   the process to exit early with a descriptive message.
-//! - **Post-condition**: Returned `Config` is always valid (no partial state).
-//! - **Invariant**: All paths are `PathBuf`, never raw strings.
+//! - **Post-condition**: A returned `Config` is fully valid; invalid input exits
+//!   the process before the runtime starts rather than yielding partial state.
 
 use std::path::PathBuf;
 
@@ -25,15 +23,35 @@ pub struct Config {
     #[arg(long, env = "DOCKER_SOCKET", default_value = "/var/run/docker.sock")]
     pub socket: PathBuf,
 
-    /// Path to a TOML allowlist configuration file.
-    ///
-    /// When provided, the allowlist overrides built-in defaults.
+    /// Path to a TOML allowlist configuration file, merged over the profile.
     #[arg(long, env = "DOCKER_PROXY_ALLOWLIST")]
     pub allowlist: Option<PathBuf>,
 
     /// Built-in security profile.
     #[arg(long, env = "DOCKER_PROXY_PROFILE", default_value = "default")]
     pub profile: SecurityProfile,
+
+    /// Maximum request body size in bytes.
+    ///
+    /// Image build contexts are the large case; raise this where `/build` is
+    /// permitted and used.
+    #[arg(long, env = "DOCKER_PROXY_MAX_BODY_BYTES", default_value = "16777216")]
+    pub max_body_bytes: usize,
+
+    /// Request timeout in seconds; `0` disables it.
+    ///
+    /// Disabled by default because `/containers/{id}/wait` and follow-mode logs
+    /// legitimately block for as long as the workload runs, and a timeout short
+    /// enough to bound an attacker would sever them.
+    #[arg(long, env = "DOCKER_PROXY_TIMEOUT_SECS", default_value = "0")]
+    pub timeout_secs: u64,
+
+    /// Probe a running proxy on `--port` and exit 0 if it reports healthy.
+    ///
+    /// For a container `HEALTHCHECK`: the `scratch` image has no shell or curl
+    /// to call `/healthz` with.
+    #[arg(long)]
+    pub health_check: bool,
 
     /// Log level (trace, debug, info, warn, error).
     #[arg(long, env = "RUST_LOG", default_value = "info")]
@@ -61,8 +79,8 @@ impl Config {
     /// Parse configuration from the environment.
     ///
     /// # Panics
-    /// Panics on invalid CLI input (by design — this is the entry point
-    /// before the async runtime starts, and Fail-Fast applies).
+    /// On invalid CLI input, by design: this runs before the async runtime, so
+    /// Fail-Fast applies.
     pub fn parse() -> Self {
         <Self as Parser>::parse()
     }

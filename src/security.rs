@@ -1,113 +1,124 @@
-//! Security filter for the Docker API proxy.
+//! Policy decision point for the Docker API proxy.
 //!
-//! Implements a **default-deny** policy. Every incoming request is
-//! inspected against the configured allowlist and denylist before
-//! being forwarded to the Docker socket.
+//! Implements a **default-deny** policy. This module is pure: it performs no
+//! I/O and reads no environment. Loading policy from disk or environment is the
+//! job of [`crate::policy`].
 //!
 //! # Contract
-//! - **Pre-condition**: `SecurityFilter` must be initialised with a valid
-//!   configuration before any request is inspected.
-//! - **Post-condition**: `check()` returns `Ok(())` if the request is allowed,
-//!   or `Err(ProxyError::Forbidden)` with a descriptive message.
-//! - **Invariant**: No request escapes inspection — every HTTP method and
-//!   path is evaluated.
+//! - **Post-condition**: `check` returns `Ok(())` if the request is allowed, or
+//!   `Err(ProxyError::Forbidden)` naming the rule that rejected it.
+//! - **Invariant**: Every method and path is evaluated; nothing escapes
+//!   inspection.
 
-use std::collections::HashMap;
 use std::collections::HashSet;
-use std::path::Path;
-
-use serde::Deserialize;
-use tracing::warn;
 
 use crate::config::SecurityProfile;
 use crate::error::ProxyError;
 
 type SecurityResult = Result<(), ProxyError>;
 
-// ── TOML config types ───────────────────────────────────────────
-
-#[derive(Debug, Deserialize)]
-pub struct AllowlistConfig {
-    pub allow: Option<EndpointSet>,
-    pub deny: Option<EndpointSet>,
-    pub include: Option<EndpointSet>,
-    pub exclude: Option<EndpointSet>,
+/// A set of methods and endpoint patterns evaluated as one rule.
+///
+/// An empty side is a wildcard, so `methods = ["DELETE"]` with no endpoints
+/// matches every `DELETE`. A rule with both sides empty is inert rather than
+/// universal — otherwise an unconfigured exclusion would reject everything.
+#[derive(Debug, Clone, Default)]
+pub struct RuleSet {
+    methods: HashSet<String>,
+    endpoints: Vec<String>,
 }
 
-#[derive(Debug, Deserialize)]
-pub struct EndpointSet {
-    pub endpoints: Option<Vec<String>>,
-    pub methods: Option<Vec<String>>,
+impl RuleSet {
+    fn new(methods: impl IntoIterator<Item = &'static str>, endpoints: &[&str]) -> Self {
+        Self {
+            methods: methods.into_iter().map(str::to_owned).collect(),
+            endpoints: endpoints.iter().map(|e| (*e).to_owned()).collect(),
+        }
+    }
+
+    fn matches(&self, method: &str, path: &str) -> bool {
+        if self.methods.is_empty() && self.endpoints.is_empty() {
+            return false;
+        }
+        (self.methods.is_empty() || self.methods.contains(method))
+            && (self.endpoints.is_empty()
+                || self.endpoints.iter().any(|p| matches_pattern(p, path)))
+    }
+
+    /// Merge additional methods and endpoints, ignoring duplicates.
+    pub fn extend(&mut self, methods: Option<Vec<String>>, endpoints: Option<Vec<String>>) {
+        self.methods.extend(methods.into_iter().flatten());
+        for endpoint in endpoints.into_iter().flatten() {
+            if !self.endpoints.contains(&endpoint) {
+                self.endpoints.push(endpoint);
+            }
+        }
+    }
 }
 
-// ── SecurityFilter ──────────────────────────────────────────────
-
-/// Endpoint filter that enforces allowlist/denylist rules.
+/// Endpoint filter enforcing allow, deny, and exclude rules.
 ///
-/// Evaluation order:
-/// 1. **Denylist** — if method AND endpoint match, block immediately.
-/// 2. **Allowlist** — if method AND endpoint match, allow.
-/// 3. **Default deny** — everything else is blocked.
+/// Combining algorithm is `deny-overrides`, evaluated in order:
+/// 1. **Exclusions** — block.
+/// 2. **Denials** — block.
+/// 3. **Allowances** — allow.
+/// 4. **Default deny**.
 ///
-/// Patterns support a `*` wildcard that matches exactly one path
-/// segment (e.g. `/containers/*/json` matches `/containers/abc/json`).
+/// Patterns support a `*` wildcard matching exactly one path segment
+/// (`/containers/*/json` matches `/containers/abc/json`), or a trailing `/`
+/// for prefix matching.
 #[derive(Debug, Clone)]
 pub struct SecurityFilter {
-    allowed_methods: HashSet<String>,
-    allowed_endpoints: Vec<String>,
-    denied_methods: HashSet<String>,
-    denied_endpoints: Vec<String>,
-    excluded_methods: HashSet<String>,
-    excluded_endpoints: Vec<String>,
+    allow: RuleSet,
+    deny: RuleSet,
+    exclude: RuleSet,
     profile: SecurityProfile,
 }
 
 impl SecurityFilter {
-    // ── Constructors ─────────────────────────────────────────
-
-    /// Create a filter with built-in defaults.
-    ///
-    /// Allows common read-only Docker endpoints on GET/HEAD.
-    /// Blocks all mutation endpoints (container create, exec, build).
+    /// Create a filter with built-in defaults: read-only endpoints on GET/HEAD.
     pub fn new() -> Self {
         Self {
-            allowed_methods: HashSet::from(["GET".into(), "HEAD".into()]),
-            allowed_endpoints: vec![
-                "/containers/json".into(),
-                "/containers/*/json".into(),
-                "/containers/*/logs".into(),
-                "/images/json".into(),
-                "/images/*/json".into(),
-                "/info".into(),
-                "/version".into(),
-                "/networks".into(),
-                "/networks/".into(),
-                "/volumes".into(),
-                "/volumes/".into(),
-                "/_ping".into(),
-            ],
-            denied_methods: HashSet::from(["POST".into(), "PUT".into(), "DELETE".into()]),
-            denied_endpoints: vec![
-                "/containers/create".into(),
-                "/containers/*/exec".into(),
-                "/containers/*/start".into(),
-                "/containers/*/stop".into(),
-                "/containers/*/restart".into(),
-                "/containers/*/kill".into(),
-                "/containers/*/pause".into(),
-                "/containers/*/unpause".into(),
-                "/containers/*/rename".into(),
-                "/containers/*/update".into(),
-                "/containers/*/delete".into(),
-                "/containers/*/resize".into(),
-                "/containers/*/attach".into(),
-                "/containers/*/wait".into(),
-                "/exec/".into(),
-                "/build".into(),
-                "/commit".into(),
-            ],
-            excluded_methods: HashSet::new(),
-            excluded_endpoints: Vec::new(),
+            allow: RuleSet::new(
+                ["GET", "HEAD"],
+                &[
+                    "/containers/json",
+                    "/containers/*/json",
+                    "/containers/*/logs",
+                    "/images/json",
+                    "/images/*/json",
+                    "/info",
+                    "/version",
+                    "/networks",
+                    "/networks/",
+                    "/volumes",
+                    "/volumes/",
+                    "/_ping",
+                ],
+            ),
+            deny: RuleSet::new(
+                ["POST", "PUT", "DELETE"],
+                &[
+                    "/containers/create",
+                    "/containers/*/exec",
+                    "/containers/*/start",
+                    "/containers/*/stop",
+                    "/containers/*/restart",
+                    "/containers/*/kill",
+                    "/containers/*/pause",
+                    "/containers/*/unpause",
+                    "/containers/*/rename",
+                    "/containers/*/update",
+                    "/containers/*/delete",
+                    "/containers/*/resize",
+                    "/containers/*/attach",
+                    "/containers/*/wait",
+                    "/exec/",
+                    "/build",
+                    "/commit",
+                ],
+            ),
+            exclude: RuleSet::default(),
             profile: SecurityProfile::Default,
         }
     }
@@ -116,28 +127,41 @@ impl SecurityFilter {
     pub fn for_profile(profile: &SecurityProfile) -> Self {
         let mut filter = Self::new();
         filter.profile = profile.clone();
+
         if matches!(profile, SecurityProfile::ReadOnly) {
-            filter.denied_methods =
-                HashSet::from(["POST".into(), "PUT".into(), "DELETE".into(), "PATCH".into()]);
+            filter.deny.methods = ["POST", "PUT", "DELETE", "PATCH"]
+                .into_iter()
+                .map(str::to_owned)
+                .collect();
         }
+
         if matches!(profile, SecurityProfile::ContainerRuntime) {
             filter
-                .allowed_methods
-                .extend(["POST".into(), "PUT".into(), "DELETE".into()]);
-            filter.allowed_endpoints.extend([
-                "/containers/create".into(),
-                "/containers/*/start".into(),
-                "/containers/*/exec".into(),
-                "/containers/*/wait".into(),
-                "/containers/*/archive".into(),
-                "/containers/*".into(),
-                "/images/create".into(),
-                "/images/load".into(),
-                "/build".into(),
-                "/networks/*/connect".into(),
-                "/exec/*/start".into(),
-            ]);
-            filter.denied_endpoints.retain(|endpoint| {
+                .allow
+                .methods
+                .extend(["POST".to_owned(), "PUT".to_owned(), "DELETE".to_owned()]);
+            filter.allow.endpoints.extend(
+                [
+                    "/containers/create",
+                    "/containers/*/start",
+                    "/containers/*/exec",
+                    "/containers/*/wait",
+                    "/containers/*/archive",
+                    "/containers/*",
+                    "/images/create",
+                    "/images/load",
+                    "/build",
+                    "/networks/*/connect",
+                    "/exec/*/start",
+                    // The exit status and terminal size of an exec the caller
+                    // already created; `docker exec` fails without them.
+                    "/exec/*/json",
+                    "/exec/*/resize",
+                ]
+                .into_iter()
+                .map(str::to_owned),
+            );
+            filter.deny.endpoints.retain(|endpoint| {
                 !matches!(
                     endpoint.as_str(),
                     "/containers/create"
@@ -150,201 +174,210 @@ impl SecurityFilter {
                 )
             });
         }
-        filter
-    }
-
-    /// Load rules from a TOML file. Falls back to built-in defaults
-    /// if the file is missing or unparseable.
-    pub fn from_file(path: Option<&Path>) -> Self {
-        Self::from_file_and_profile(path, &SecurityProfile::Default)
-    }
-
-    /// Load rules on top of a named built-in profile.
-    pub fn from_file_and_profile(path: Option<&Path>, profile: &SecurityProfile) -> Self {
-        let mut filter = match path {
-            None => Self::for_profile(profile),
-            Some(path) => match std::fs::read_to_string(path) {
-                Ok(contents) => match toml::from_str::<AllowlistConfig>(&contents) {
-                    Ok(cfg) => Self::from_config(cfg, profile),
-                    Err(e) => {
-                        warn!("Invalid allowlist file {}: {e}", path.display());
-                        Self::for_profile(profile)
-                    }
-                },
-                Err(e) => {
-                    warn!("Cannot read allowlist file {}: {e}", path.display());
-                    Self::for_profile(profile)
-                }
-            },
-        };
-        filter.apply_environment(&std::env::vars().collect());
-        filter
-    }
-
-    fn from_config(cfg: AllowlistConfig, profile: &SecurityProfile) -> Self {
-        let mut filter = Self::for_profile(profile);
-
-        // `allow`/`deny` are additive modifiers for compatibility with the
-        // common Docker socket proxy terminology. `include`/`exclude` are the
-        // explicit modifier names and are applied after the base profile.
-        for set in [cfg.allow, cfg.include].into_iter().flatten() {
-            extend_unique(&mut filter.allowed_endpoints, set.endpoints);
-            extend_set(&mut filter.allowed_methods, set.methods);
-        }
-        for set in [cfg.deny].into_iter().flatten() {
-            extend_unique(&mut filter.denied_endpoints, set.endpoints);
-            extend_set(&mut filter.denied_methods, set.methods);
-        }
-        for set in [cfg.exclude].into_iter().flatten() {
-            extend_unique(&mut filter.excluded_endpoints, set.endpoints);
-            extend_set(&mut filter.excluded_methods, set.methods);
-        }
 
         filter
     }
 
-    fn apply_environment(&mut self, env: &HashMap<String, String>) {
-        for name in [
-            "DOCKER_PROXY_ALLOW_ENDPOINTS",
-            "DOCKER_PROXY_INCLUDE_ENDPOINTS",
-        ] {
-            extend_unique(&mut self.allowed_endpoints, split_env_list(env.get(name)));
-        }
-        extend_unique(
-            &mut self.denied_endpoints,
-            split_env_list(env.get("DOCKER_PROXY_DENY_ENDPOINTS")),
-        );
-        extend_unique(
-            &mut self.excluded_endpoints,
-            split_env_list(env.get("DOCKER_PROXY_EXCLUDE_ENDPOINTS")),
-        );
-        for name in ["DOCKER_PROXY_ALLOW_METHODS", "DOCKER_PROXY_INCLUDE_METHODS"] {
-            self.allowed_methods
-                .extend(split_env_list(env.get(name)).into_iter().flatten());
-        }
-        self.denied_methods.extend(
-            split_env_list(env.get("DOCKER_PROXY_DENY_METHODS"))
-                .into_iter()
-                .flatten(),
-        );
-        self.excluded_methods.extend(
-            split_env_list(env.get("DOCKER_PROXY_EXCLUDE_METHODS"))
-                .into_iter()
-                .flatten(),
-        );
+    /// Mutable access to the allow rules, for the policy loader.
+    pub fn allow_mut(&mut self) -> &mut RuleSet {
+        &mut self.allow
     }
 
-    // ── Check ─────────────────────────────────────────────────
+    /// Mutable access to the deny rules, for the policy loader.
+    pub fn deny_mut(&mut self) -> &mut RuleSet {
+        &mut self.deny
+    }
 
-    /// Check whether a request is allowed through the proxy.
-    ///
-    /// # Arguments
-    /// - `method` — HTTP method (e.g. `"GET"`, `"POST"`).
-    /// - `path`   — Request URI path (e.g. `"/containers/json"`).
+    /// Mutable access to the exclude rules, for the policy loader.
+    pub fn exclude_mut(&mut self) -> &mut RuleSet {
+        &mut self.exclude
+    }
+
+    /// The profile this filter was built from, for audit events.
+    pub fn profile(&self) -> &SecurityProfile {
+        &self.profile
+    }
+
+    /// Check a method and an already-normalized path against the policy.
     pub fn check(&self, method: &str, path: &str) -> SecurityResult {
-        if self.excluded_methods.contains(method)
-            || self
-                .excluded_endpoints
-                .iter()
-                .any(|p| matches_pattern(p, path))
-        {
+        if self.exclude.matches(method, path) {
             return Err(ProxyError::Forbidden(format!(
                 "excluded by policy: {method} {path}"
             )));
         }
-        // 1. Denylist takes priority
-        if self.denied_methods.contains(method)
-            && self
-                .denied_endpoints
-                .iter()
-                .any(|p| matches_pattern(p, path))
-        {
+        if self.deny.matches(method, path) {
             return Err(ProxyError::Forbidden(format!(
                 "blocked endpoint: {method} {path}"
             )));
         }
-
-        // 2. Allowlist
-        if self.allowed_methods.contains(method)
-            && self
-                .allowed_endpoints
-                .iter()
-                .any(|p| matches_pattern(p, path))
-        {
+        if self.allow.matches(method, path) {
             return Ok(());
         }
-
-        // 3. Default deny
         Err(ProxyError::Forbidden(format!(
             "not allowed: {method} {path}"
         )))
     }
 
-    /// Check the request and validate profile-specific metadata.
-    pub fn check_request(&self, method: &str, path: &str, body: &[u8]) -> SecurityResult {
-        let policy_path = normalize_api_path(path);
-        self.check(method, policy_path)?;
+    /// Decide from the request head, reporting what the body still owes.
+    ///
+    /// Splitting the decision lets requests whose body carries no policy weight
+    /// stream through instead of being held in memory.
+    pub fn check_head(&self, method: &str, path: &str) -> Result<BodyRule, ProxyError> {
+        let path = normalize_path(path)?;
+        self.check(method, &path)?;
+
         if matches!(self.profile, SecurityProfile::ContainerRuntime)
             && method == "POST"
-            && policy_path == "/containers/create"
+            && path == "/containers/create"
         {
-            check_dagster_create_body(body)?;
+            return Ok(BodyRule::ContainerCreate);
         }
-        Ok(())
+        Ok(BodyRule::None)
+    }
+
+    /// Apply the rule [`Self::check_head`] reported.
+    pub fn check_body(rule: BodyRule, body: &[u8]) -> SecurityResult {
+        match rule {
+            BodyRule::None => Ok(()),
+            BodyRule::ContainerCreate => check_create_body(body),
+        }
+    }
+
+    /// Normalize the path, check it, then validate profile-specific body rules.
+    pub fn check_request(&self, method: &str, path: &str, body: &[u8]) -> SecurityResult {
+        Self::check_body(self.check_head(method, path)?, body)
     }
 }
 
-fn extend_unique(target: &mut Vec<String>, values: Option<Vec<String>>) {
-    for value in values.into_iter().flatten() {
-        if !target.contains(&value) {
-            target.push(value);
-        }
+/// What a request body owes the decision beyond its head.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BodyRule {
+    /// The head decided it; the body may stream through uninspected.
+    None,
+    /// Container-create constraints apply.
+    ContainerCreate,
+}
+
+impl Default for SecurityFilter {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
-fn split_env_list(value: Option<&String>) -> Option<Vec<String>> {
-    value.map(|raw| {
-        raw.split(',')
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .map(ToOwned::to_owned)
-            .collect()
-    })
+// ── Path normalization ─────────────────────────────────────────
+
+/// Reduce a request path to the form policy patterns are written against.
+///
+/// Applies RFC 3986 §6 normalization — percent-decoding, dot-segment removal,
+/// and empty-segment collapsing — before stripping the Docker API version
+/// prefix. Without this, `/v1.4/containers/../secrets` or `/containers/%2e%2e`
+/// would be matched literally and could evade a rule.
+fn normalize_path(path: &str) -> Result<String, ProxyError> {
+    let decoded = percent_decode(path)?;
+    Ok(strip_api_version(&remove_dot_segments(&decoded)).to_owned())
 }
 
-fn extend_set(target: &mut HashSet<String>, values: Option<Vec<String>>) {
-    target.extend(values.into_iter().flatten());
+/// Percent-decode, rejecting encoded path separators.
+///
+/// RFC 3986 §2.2 makes `%2F` distinct from `/`, so decoding one would invent a
+/// segment boundary that the origin server does not see. Since either
+/// interpretation could disagree with the daemon's, the request is refused.
+fn percent_decode(path: &str) -> Result<String, ProxyError> {
+    let bytes = path.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+
+    while i < bytes.len() {
+        if bytes[i] != b'%' {
+            out.push(bytes[i]);
+            i += 1;
+            continue;
+        }
+
+        let digits = bytes
+            .get(i + 1..i + 3)
+            .and_then(|d| std::str::from_utf8(d).ok())
+            .ok_or_else(|| ProxyError::Forbidden("truncated percent-encoding in path".into()))?;
+        let byte = u8::from_str_radix(digits, 16)
+            .map_err(|_| ProxyError::Forbidden("invalid percent-encoding in path".into()))?;
+
+        if byte == b'/' || byte == b'\\' {
+            return Err(ProxyError::Forbidden(
+                "encoded path separator in path".into(),
+            ));
+        }
+
+        out.push(byte);
+        i += 3;
+    }
+
+    String::from_utf8(out).map_err(|_| ProxyError::Forbidden("path is not valid UTF-8".into()))
 }
 
-fn normalize_api_path(path: &str) -> &str {
-    let mut segments = path.split('/');
-    let _root = segments.next();
-    let version = segments.next().unwrap_or_default();
-    if version.starts_with('v')
-        && version[1..]
+/// Resolve `.` and `..` segments and collapse empty ones (RFC 3986 §5.2.4).
+fn remove_dot_segments(path: &str) -> String {
+    let mut segments: Vec<&str> = Vec::new();
+    for segment in path.split('/') {
+        match segment {
+            "" | "." => {}
+            ".." => {
+                segments.pop();
+            }
+            other => segments.push(other),
+        }
+    }
+
+    if segments.is_empty() {
+        return "/".to_owned();
+    }
+
+    let mut out = String::with_capacity(path.len());
+    for segment in segments {
+        out.push('/');
+        out.push_str(segment);
+    }
+    out
+}
+
+/// Strip a Docker API version prefix (`/v1.55/version` → `/version`) so policy
+/// patterns need not enumerate versions.
+fn strip_api_version(path: &str) -> &str {
+    let Some(rest) = path.strip_prefix("/v") else {
+        return path;
+    };
+    let version = rest.split('/').next().unwrap_or_default();
+    let is_version = !version.is_empty()
+        && version
             .split('.')
-            .all(|part| !part.is_empty() && part.chars().all(|c| c.is_ascii_digit()))
-    {
-        let prefix_len = 1 + version.len();
-        return &path[prefix_len..];
+            .all(|part| !part.is_empty() && part.chars().all(|c| c.is_ascii_digit()));
+
+    if is_version {
+        &path[1 + 1 + version.len()..]
+    } else {
+        path
     }
-    path
 }
 
-fn check_dagster_create_body(body: &[u8]) -> SecurityResult {
-    let value: serde_json::Value = serde_json::from_slice(body).map_err(|_| {
-        ProxyError::Forbidden("Dagster container create body must be valid JSON".into())
-    })?;
-    let object = value.as_object().ok_or_else(|| {
-        ProxyError::Forbidden("Dagster container create body must be an object".into())
-    })?;
+// ── Body inspection ────────────────────────────────────────────
+
+/// Reject container-create bodies that would escape the container boundary.
+///
+/// Mounts are deliberately permitted: orchestrators require them, and this
+/// profile is documented as trusted-caller-only.
+fn check_create_body(body: &[u8]) -> SecurityResult {
+    let value: serde_json::Value = serde_json::from_slice(body)
+        .map_err(|_| ProxyError::Forbidden("container create body must be valid JSON".into()))?;
+    let object = value
+        .as_object()
+        .ok_or_else(|| ProxyError::Forbidden("container create body must be an object".into()))?;
+
     let image = object.get("Image").and_then(serde_json::Value::as_str);
-    let labels = object.get("Labels").and_then(serde_json::Value::as_object);
     if image.is_none() || image == Some("") || object.get("Cmd").is_none() {
         return Err(ProxyError::Forbidden(
-            "Dagster create requires Image and Cmd metadata".into(),
+            "container create requires Image and Cmd".into(),
         ));
     }
+
     for key in [
         "Privileged",
         "CapAdd",
@@ -356,51 +389,43 @@ fn check_dagster_create_body(body: &[u8]) -> SecurityResult {
     ] {
         if object.get(key).is_some_and(|value| !value.is_null()) {
             return Err(ProxyError::Forbidden(format!(
-                "Dagster create field is not permitted: {key}"
+                "container create field is not permitted: {key}"
             )));
         }
     }
-    if let Some(labels) = labels {
+
+    if let Some(labels) = object.get("Labels").and_then(serde_json::Value::as_object) {
+        // Only enforced once a caller identifies itself as Dagster, so other
+        // orchestrators are not required to carry its labels.
+        let is_dagster = labels.keys().any(|key| key.starts_with("dagster/"));
         for label in ["dagster/run_id", "dagster/job_name"] {
-            if object.get("Labels").is_some()
-                && labels.get(label).is_none()
-                && labels.keys().any(|key| key.starts_with("dagster/"))
-            {
+            if is_dagster && labels.get(label).is_none() {
                 return Err(ProxyError::Forbidden(format!(
-                    "Dagster create requires label: {label}"
+                    "container create requires label: {label}"
                 )));
             }
         }
     }
-    Ok(())
-}
 
-impl Default for SecurityFilter {
-    fn default() -> Self {
-        Self::new()
-    }
+    Ok(())
 }
 
 // ── Pattern matching ───────────────────────────────────────────
 
-/// Match a path against a pattern that supports `*` as a single-segment wildcard.
+/// Match a path against a pattern, in one of three modes:
 ///
-/// - Exact: `"/containers/json"` matches `"/containers/json"`
-/// - Wildcard: `"/containers/*/json"` matches `"/containers/abc123/json"`
-/// - Prefix: `"/exec/"` matches `"/exec/anything/here"`
-/// - Wildcard fails on wrong suffix: `"/containers/*/json"` does NOT match `"/containers/abc/exec"`
+/// - exact — `/containers/json`
+/// - prefix, when the pattern ends in `/` — `/exec/` matches `/exec/abc/start`
+/// - wildcard, where `*` matches exactly one segment — `/containers/*/json`
 fn matches_pattern(pattern: &str, path: &str) -> bool {
-    // Exact match
     if pattern == path {
         return true;
     }
 
-    // Prefix match (pattern ends with '/')
     if pattern.ends_with('/') {
         return path.starts_with(pattern);
     }
 
-    // Wildcard segment matching: /containers/*/json
     if pattern.contains('*') {
         let segs_pat: Vec<&str> = pattern.split('/').filter(|s| !s.is_empty()).collect();
         let segs_path: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
@@ -475,20 +500,15 @@ mod tests {
     #[test]
     fn allows_get_to_allowed_endpoints() {
         let f = filter();
-        // Network list
         assert!(f.check("GET", "/networks").is_ok());
-        // Network inspect
         assert!(f.check("HEAD", "/networks/my-net").is_ok());
-        // Volume list
         assert!(f.check("GET", "/volumes").is_ok());
-        // Volume inspect
         assert!(f.check("GET", "/volumes/my-vol").is_ok());
     }
 
     #[test]
     fn blocks_post_to_allowed_prefix() {
         let f = filter();
-        // POST to a network endpoint should be blocked
         assert!(f.check("POST", "/networks/create").is_err());
     }
 
@@ -515,6 +535,30 @@ mod tests {
     }
 
     #[test]
+    fn container_runtime_profile_completes_an_exec() {
+        let f = SecurityFilter::for_profile(&SecurityProfile::ContainerRuntime);
+        assert!(f.check("GET", "/exec/exec-id/json").is_ok(), "exit status");
+        assert!(f.check("POST", "/exec/exec-id/resize").is_ok());
+        assert!(
+            f.check("POST", "/containers/abc/attach").is_err(),
+            "attach stays denied; exec is the supported path"
+        );
+    }
+
+    #[test]
+    fn default_profile_refuses_the_exec_lifecycle() {
+        let f = SecurityFilter::new();
+        for (method, path) in [
+            ("POST", "/containers/abc/exec"),
+            ("POST", "/exec/exec-id/start"),
+            ("GET", "/exec/exec-id/json"),
+            ("POST", "/exec/exec-id/resize"),
+        ] {
+            assert!(f.check(method, path).is_err(), "{method} {path}");
+        }
+    }
+
+    #[test]
     fn container_runtime_profile_requires_safe_create_metadata() {
         let f = SecurityFilter::for_profile(&SecurityProfile::ContainerRuntime);
         let body = br#"{"Image":"worker:latest","Cmd":["dagster","api"],"Labels":{"dagster/run_id":"run-1","dagster/job_name":"job"}}"#;
@@ -536,22 +580,33 @@ mod tests {
     }
 
     #[test]
-    fn from_toml_merges_allow_rules_with_defaults() {
-        let toml = r#"
-[allow]
-endpoints = ["/_ping"]
-methods = ["GET"]
+    fn read_only_profile_blocks_mutating_methods() {
+        let f = SecurityFilter::for_profile(&SecurityProfile::ReadOnly);
+        assert!(f.check("GET", "/info").is_ok());
+        assert!(f.check("POST", "/containers/json").is_err());
+    }
 
-[deny]
-endpoints = []
-methods = []
-"#;
-        let cfg: AllowlistConfig = toml::from_str(toml).unwrap();
-        let f = SecurityFilter::from_config(cfg, &SecurityProfile::Default);
+    #[test]
+    fn rule_with_only_methods_matches_every_path() {
+        let mut f = filter();
+        f.exclude_mut()
+            .extend(Some(vec!["GET".into()]), Some(Vec::new()));
+        assert!(f.check("GET", "/info").is_err());
+        assert!(f.check("HEAD", "/info").is_ok());
+    }
 
-        // The configured endpoint is added while the profile defaults remain.
-        assert!(f.check("GET", "/_ping").is_ok());
-        assert!(f.check("GET", "/containers/json").is_ok());
+    #[test]
+    fn rule_with_only_endpoints_matches_every_method() {
+        let mut f = filter();
+        f.exclude_mut()
+            .extend(Some(Vec::new()), Some(vec!["/info".into()]));
+        assert!(f.check("GET", "/info").is_err());
+        assert!(f.check("GET", "/version").is_ok());
+    }
+
+    #[test]
+    fn empty_rule_is_inert() {
+        let f = filter();
         assert!(f.check("GET", "/info").is_ok());
     }
 
@@ -574,11 +629,6 @@ methods = []
             "/containers/*/json",
             "/containers/abc123/json"
         ));
-        assert!(matches_pattern(
-            "/containers/*/json",
-            "/containers/def456/json"
-        ));
-        // Wildcard matches ONE segment, not multiple
         assert!(!matches_pattern(
             "/containers/*/json",
             "/containers/a/b/json"
@@ -612,44 +662,53 @@ methods = []
     }
 
     #[test]
-    fn include_adds_and_exclude_removes_from_profile() {
-        let cfg: AllowlistConfig = toml::from_str(
-            r#"
-[include]
-endpoints = ["/images/*/json"]
-methods = ["GET"]
-
-[exclude]
-endpoints = ["/containers/*/logs"]
-"#,
-        )
-        .unwrap();
-        let f = SecurityFilter::from_config(cfg, &SecurityProfile::Default);
-        assert!(f.check("GET", "/images/abc/json").is_ok());
-        assert!(f.check("GET", "/containers/abc/logs").is_err());
+    fn leaves_non_version_prefixes_alone() {
+        assert_eq!(strip_api_version("/volumes/my-vol"), "/volumes/my-vol");
+        assert_eq!(strip_api_version("/v1.55/version"), "/version");
+        assert_eq!(strip_api_version("/volumes"), "/volumes");
+        assert_eq!(strip_api_version("/v/version"), "/v/version");
     }
 
     #[test]
-    fn read_only_profile_blocks_mutating_methods() {
-        let f = SecurityFilter::for_profile(&SecurityProfile::ReadOnly);
-        assert!(f.check("GET", "/info").is_ok());
-        assert!(f.check("POST", "/containers/json").is_err());
+    fn resolves_dot_segments_before_matching() {
+        let f = filter();
+        assert_eq!(normalize_path("/containers/../info").unwrap(), "/info");
+        assert_eq!(normalize_path("//info").unwrap(), "/info");
+        assert_eq!(normalize_path("/./info").unwrap(), "/info");
+        assert!(f.check_request("GET", "/containers/../info", b"").is_ok());
     }
 
     #[test]
-    fn environment_lists_merge_with_profile() {
-        let mut f = SecurityFilter::for_profile(&SecurityProfile::Default);
-        let env = HashMap::from([
-            (
-                "DOCKER_PROXY_ALLOW_ENDPOINTS".into(),
-                "/images/search".into(),
-            ),
-            ("DOCKER_PROXY_ALLOW_METHODS".into(), "POST".into()),
-            ("DOCKER_PROXY_EXCLUDE_ENDPOINTS".into(), "/info".into()),
-        ]);
-        f.apply_environment(&env);
-        assert!(f.check("POST", "/images/search").is_ok());
-        assert!(f.check("GET", "/info").is_err());
-        assert!(f.check("GET", "/version").is_ok());
+    fn dot_segments_cannot_escape_into_a_denied_endpoint() {
+        let f = SecurityFilter::for_profile(&SecurityProfile::ContainerRuntime);
+        // Would reach /containers/create, which requires body inspection.
+        assert!(
+            f.check_request("POST", "/containers/abc/../create", b"{}")
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn decodes_percent_encoded_paths() {
+        assert_eq!(normalize_path("/%69nfo").unwrap(), "/info");
+        assert_eq!(normalize_path("/containers/%2e%2e/info").unwrap(), "/info");
+    }
+
+    #[test]
+    fn rejects_encoded_path_separators() {
+        assert!(normalize_path("/containers%2f..%2finfo").is_err());
+        assert!(normalize_path("/containers%5cinfo").is_err());
+    }
+
+    #[test]
+    fn rejects_malformed_percent_encoding() {
+        assert!(normalize_path("/info%").is_err());
+        assert!(normalize_path("/info%zz").is_err());
+    }
+
+    #[test]
+    fn normalizes_root() {
+        assert_eq!(normalize_path("/").unwrap(), "/");
+        assert_eq!(normalize_path("/..").unwrap(), "/");
     }
 }

@@ -9,13 +9,10 @@ use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 
 fn main() {
-    // Parse config first (Fail-Fast: bad config exits immediately).
+    // Parsed before logging is initialised so a bad config fails fast.
     let config = docker_socket_proxy::config::Config::parse();
-
-    // Initialise structured logging.
     init_logging(&config);
 
-    // Run the async proxy server.
     let rt = match tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
@@ -28,6 +25,14 @@ fn main() {
     };
 
     rt.block_on(async {
+        if config.health_check {
+            if let Err(e) = docker_socket_proxy::observability::probe(config.port).await {
+                tracing::error!(port = config.port, reason = %e, "health check failed");
+                std::process::exit(1);
+            }
+            return;
+        }
+
         if let Err(e) = docker_socket_proxy::proxy::serve(config).await {
             tracing::error!(%e, "proxy server exited with error");
             std::process::exit(1);

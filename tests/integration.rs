@@ -40,15 +40,27 @@ async fn spawn_mock(socket_path: PathBuf) {
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 }
 
+/// Echoes the headers it received back to the caller so tests can assert on
+/// what the proxy actually forwarded.
 async fn mock_handler(
-    _req: HyperRequest<Incoming>,
+    req: HyperRequest<Incoming>,
 ) -> Result<HyperResponse<Full<Bytes>>, hyper::Error> {
+    let received: Vec<String> = req
+        .headers()
+        .keys()
+        .map(|k| k.as_str().to_ascii_lowercase())
+        .collect();
+
+    let body = serde_json::json!({
+        "Version": "20.10.0-mock",
+        "ApiVersion": "1.41",
+        "ReceivedHeaders": received,
+    });
+
     Ok(HyperResponse::builder()
         .status(200)
         .header("Content-Type", "application/json")
-        .body(Full::new(Bytes::from(
-            r#"{"Version":"20.10.0-mock","ApiVersion":"1.41"}"#,
-        )))
+        .body(Full::new(Bytes::from(body.to_string())))
         .unwrap())
 }
 
@@ -94,7 +106,54 @@ async fn blocks_denied_endpoint_with_403() {
 
     let body = resp.into_body().collect().await.unwrap().to_bytes();
     let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
-    assert_eq!(json["status"], 403);
+
+    // Docker Engine API error contract: `{"message": ...}`.
+    let message = json["message"].as_str().expect("message field");
+    assert!(message.contains("/containers/create"), "got: {message}");
+    assert!(json.get("error").is_none());
+    assert!(json.get("status").is_none());
+}
+
+#[tokio::test]
+async fn does_not_forward_hop_by_hop_headers_upstream() {
+    let socket = std::env::temp_dir().join("test-proxy-hop-by-hop.sock");
+    spawn_mock(socket.clone()).await;
+
+    let router = test_router(socket, SecurityFilter::new());
+
+    let req = Request::builder()
+        .method(Method::GET)
+        .uri("/version")
+        // Naming `X-Secret` here makes it connection-specific per RFC 9110 §7.6.1.
+        .header("Connection", "keep-alive, X-Secret")
+        .header("X-Secret", "do-not-forward")
+        .header("Keep-Alive", "timeout=5")
+        .header("X-Public", "forward-me")
+        .body(Body::empty())
+        .unwrap();
+
+    let resp = router.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let body = resp.into_body().collect().await.unwrap().to_bytes();
+    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    let seen: Vec<&str> = json["ReceivedHeaders"]
+        .as_array()
+        .expect("ReceivedHeaders")
+        .iter()
+        .filter_map(serde_json::Value::as_str)
+        .collect();
+
+    for stripped in ["connection", "keep-alive", "x-secret"] {
+        assert!(
+            !seen.contains(&stripped),
+            "{stripped} leaked upstream: {seen:?}"
+        );
+    }
+    assert!(
+        seen.contains(&"x-public"),
+        "end-to-end header dropped: {seen:?}"
+    );
 }
 
 #[tokio::test]
