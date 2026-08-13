@@ -122,7 +122,8 @@ const MUTATING_ENDPOINTS: &[&str] = &[
     "/containers/*/unpause",
     "/containers/*/rename",
     "/containers/*/update",
-    "/containers/*/delete",
+    // Removal is DELETE on the container itself, not a subpath.
+    "/containers/*",
     "/containers/*/resize",
     "/containers/*/attach",
     "/containers/*/wait",
@@ -181,25 +182,29 @@ impl SecurityFilter {
             allow: RuleSet::default(),
             deny: RuleList::default(),
             exclude: RuleList::default(),
-            profile: SecurityProfile::Default,
+            profile: SecurityProfile::None,
         }
     }
 
     /// Create a filter for a built-in security profile.
     pub fn for_profile(profile: &SecurityProfile) -> Self {
-        let mut allow = RuleSet::new(READ_METHODS, READABLE_ENDPOINTS);
+        let mut allow = RuleSet::default();
         let mut deny = RuleList::default();
 
         match profile {
+            SecurityProfile::None => {}
             SecurityProfile::Default => {
+                allow.add(READ_METHODS, READABLE_ENDPOINTS);
                 deny.push_rule(RuleSet::new(WRITE_METHODS, MUTATING_ENDPOINTS));
             }
             // Every write is refused, on any endpoint, so a later allow rule
             // cannot reopen one under a profile whose name promises otherwise.
             SecurityProfile::ReadOnly => {
+                allow.add(READ_METHODS, READABLE_ENDPOINTS);
                 deny.push_rule(RuleSet::new(&["POST", "PUT", "DELETE", "PATCH"], &[]));
             }
             SecurityProfile::ContainerRuntime => {
+                allow.add(READ_METHODS, READABLE_ENDPOINTS);
                 allow.add(WRITE_METHODS, RUNTIME_ENDPOINTS);
 
                 let mut writes = RuleSet::new(WRITE_METHODS, MUTATING_ENDPOINTS);
@@ -212,7 +217,7 @@ impl SecurityFilter {
                             | "/containers/*/start"
                             | "/containers/*/exec"
                             | "/containers/*/wait"
-                            | "/containers/*/delete"
+                            | "/containers/*"
                             | "/exec/"
                             | "/build"
                     )
@@ -247,6 +252,18 @@ impl SecurityFilter {
     /// The profile this filter was built from, for audit events.
     pub fn profile(&self) -> &SecurityProfile {
         &self.profile
+    }
+
+    /// Every endpoint pattern this filter can match on, in any position.
+    ///
+    /// A pattern matching no real Docker endpoint is dead policy: it neither
+    /// grants nor blocks anything, while reading as though it does.
+    pub fn endpoint_patterns(&self) -> Vec<&str> {
+        std::iter::once(&self.allow)
+            .chain(self.deny.0.iter())
+            .chain(self.exclude.0.iter())
+            .flat_map(|rule| rule.endpoints.iter().map(String::as_str))
+            .collect()
     }
 
     /// Check a method and an already-normalized path against the policy.
@@ -627,6 +644,30 @@ mod tests {
         assert!(
             f.check_request("POST", "/containers/create", mounted)
                 .is_ok()
+        );
+    }
+
+    #[test]
+    fn container_removal_stays_denied_when_delete_is_allowed() {
+        let mut f = filter();
+        f.allow_mut()
+            .extend(Some(vec!["DELETE".into()]), Some(Vec::new()));
+        assert!(f.check("DELETE", "/containers/abc").is_err());
+        assert!(f.check("POST", "/containers/prune").is_err());
+    }
+
+    #[test]
+    fn none_profile_grants_nothing_until_told_to() {
+        let mut f = SecurityFilter::for_profile(&SecurityProfile::None);
+        assert!(f.check("GET", "/version").is_err());
+        assert!(f.check("GET", "/_ping").is_err());
+
+        f.allow_mut()
+            .extend(Some(vec!["GET".into()]), Some(vec!["/version".into()]));
+        assert!(f.check("GET", "/version").is_ok());
+        assert!(
+            f.check("GET", "/info").is_err(),
+            "nothing arrives that was not asked for"
         );
     }
 

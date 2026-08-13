@@ -1,10 +1,8 @@
 # Section-style grants as an allowlist file, in YAML.
 #
-# This is close to `CONTAINERS=1 IMAGES=1 NETWORKS=1 VOLUMES=1` with POST off,
-# but not identical: a file is merged over the selected profile, so the default
-# profile's own read grants (`/info`, `/version`, `/_ping`) still apply. Use the
-# section variables themselves — see `compose/tecnativa-compat.yml` — where the
-# policy has to be exactly what is written and nothing more.
+# Equivalent to `CONTAINERS=1 IMAGES=1 NETWORKS=1 VOLUMES=1` with POST off, but
+# only under `--profile none`. Every other profile merges its own grants in, so
+# `/info` and the rest of its read set would come along too.
 
 include:
   methods:

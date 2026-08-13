@@ -21,11 +21,18 @@ thiserror = "2"
 tower = { version = "0.5", default-features = false }
 tower-http = { version = "0.7", default-features = false, features = ["timeout"] }
 toml = "1.1"
-serde-saphyr = "1.0"
+serde-saphyr = { version = "1.0", optional = true }
 http-body-util = "0.1"
+
+[features]
+default = ["yaml"]
+# YAML allowlists. On by default so a documented format cannot vanish with a
+# build flag; drop it with --no-default-features for a smaller tree.
+yaml = ["dep:serde-saphyr"]
 
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }
+serde-saphyr = "1.0"
 
 [lints.rust]
 unsafe_code = "forbid"

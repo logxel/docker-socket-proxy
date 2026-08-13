@@ -1,6 +1,8 @@
 # docker-socket-proxy
 
 [![CI/CD](https://github.com/logxel/docker-socket-proxy/actions/workflows/ci.yml/badge.svg)](https://github.com/logxel/docker-socket-proxy/actions/workflows/ci.yml)
+[![Scorecard](https://github.com/logxel/docker-socket-proxy/actions/workflows/scorecard.yml/badge.svg)](https://github.com/logxel/docker-socket-proxy/actions/workflows/scorecard.yml)
+[![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/logxel/docker-socket-proxy/badge)](https://scorecard.dev/viewer/?uri=github.com/logxel/docker-socket-proxy)
 
 A secure, minimal Docker socket proxy written in Rust. Exposes the Docker API over TCP while filtering dangerous endpoints.
 
@@ -34,9 +36,10 @@ docker-socket-proxy [OPTIONS]
 
 Options:
   --port <PORT>              TCP port to listen on [env: DOCKER_PROXY_PORT] [default: 2375]
+  --bind <ADDR>              Address to listen on [env: DOCKER_PROXY_BIND] [default: 127.0.0.1]
   --socket <PATH>            Docker Unix socket path [env: DOCKER_SOCKET] [default: /var/run/docker.sock]
   --allowlist <FILE>         Path to TOML or YAML allowlist file (.toml, .yaml, .yml)
-  --profile <PROFILE>        Built-in profile: default, read-only, container-runtime
+  --profile <PROFILE>        Built-in profile: default, read-only, container-runtime, none
   --max-body-bytes <BYTES>   Maximum request body size [default: 16777216]
   --timeout-secs <SECS>      Request timeout; 0 disables [default: 0]
   --health-check             Probe a running proxy on --port and exit 0 if healthy
@@ -56,9 +59,35 @@ start on profile defaults you did not ask for. The parser is chosen by
 extension — `.toml`, `.yaml`, or `.yml` — and any other extension is refused
 rather than guessed at.
 
+`--bind` defaults to loopback. The port has no authentication, so reaching it is
+the whole authorization story, and a default reachable from the network would
+hand the daemon to anyone who found it. The published image sets
+`DOCKER_PROXY_BIND=0.0.0.0`, because there the container boundary and your
+published ports control exposure instead. Binding `::` requires IPv6 enabled on
+the host.
+
 ### Profiles
 
-Built-in profiles are `default`, `read-only`, and `container-runtime`. `read-only` is a standard descriptive name for Docker API consumers that need inspection only. `container-runtime` is the generic profile for trusted workload orchestrators such as Dagster's official `DockerRunLauncher`.
+| Profile | Grants |
+|---|---|
+| `default` | Read-only endpoints on GET and HEAD; mutation blocked |
+| `read-only` | The same reads, with every write method denied on every endpoint |
+| `container-runtime` | Launching and managing containers, with create bodies inspected |
+| `none` | Nothing — your allowlist is the whole policy |
+
+`read-only` is a standard descriptive name for Docker API consumers that need inspection only. `container-runtime` is the generic profile for trusted workload orchestrators such as Dagster's official `DockerRunLauncher`.
+
+`none` exists because every other profile *merges* its grants with your file, so a file alone cannot express "this and nothing more". Start from `none` when the policy must be exactly what you wrote.
+
+### Build Features
+
+`yaml` is on by default and can be dropped for a smaller build:
+
+```bash
+cargo build --release --no-default-features   # TOML allowlists only
+```
+
+A YAML allowlist given to a build without it is refused by name, not silently ignored.
 
 ### Example Allowlist
 
@@ -76,13 +105,15 @@ Rules are merged with the selected profile. `allow` and `deny` are additive alia
 
 Worked examples, each covered by [`tests/examples.rs`](tests/examples.rs):
 
-| File | Shows |
-|---|---|
-| [`container-runtime.toml`](examples/container-runtime.toml) | A complete workload-launcher policy |
-| [`create-inspection.toml`](examples/create-inspection.toml) | Which create bodies are refused, and why endpoint rules cannot say it |
-| [`sections-read-only.yaml`](examples/sections-read-only.yaml) | Section-style grants as YAML, with prefix rules narrowed by `exclude` |
-| [`compose/tecnativa-compat.yml`](examples/compose/tecnativa-compat.yml) | Drop-in replacement using the section variables |
-| [`compose/container-runtime.yml`](examples/compose/container-runtime.yml) | Deployment with an allowlist, health check, and loopback-only port |
+| File | Format | Shows |
+|---|---|---|
+| [`container-runtime.toml`](examples/container-runtime.toml) | TOML | A complete workload-launcher policy |
+| [`create-inspection.toml`](examples/create-inspection.toml) | TOML | Which create bodies are refused, and why endpoint rules cannot say it |
+| [`tecnativa-equivalent.toml`](examples/tecnativa-equivalent.toml) | TOML | The section variables written out, under `--profile none` |
+| [`sections-read-only.yaml`](examples/sections-read-only.yaml) | YAML | Section-style grants, with prefix rules narrowed by `exclude` |
+| [`env-modifiers.env`](examples/env-modifiers.env) | env | Policy set entirely through the environment |
+| [`compose/tecnativa-compat.yml`](examples/compose/tecnativa-compat.yml) | compose | Drop-in replacement using the section variables |
+| [`compose/container-runtime.yml`](examples/compose/container-runtime.yml) | compose | Deployment with an allowlist, health check, and loopback-only port |
 
 ```toml
 [include]

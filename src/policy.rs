@@ -213,7 +213,14 @@ fn parse_document(path: &Path, contents: &str) -> Result<PolicyDocument, ProxyEr
         .map(str::to_ascii_lowercase)
         .as_deref()
     {
+        #[cfg(feature = "yaml")]
         Some("yaml" | "yml") => serde_saphyr::from_str(contents).map_err(|e| invalid(&e)),
+        #[cfg(not(feature = "yaml"))]
+        Some("yaml" | "yml") => Err(ProxyError::Config(format!(
+            "cannot read {}: this build has no YAML support (built without the \
+             \"yaml\" feature); convert the file to TOML or use a default build",
+            path.display()
+        ))),
         Some("toml") | None => toml::from_str(contents).map_err(|e| invalid(&e)),
         Some(other) => Err(ProxyError::Config(format!(
             "unsupported allowlist format {other:?} for {}: expected toml, yaml, or yml",
@@ -341,6 +348,14 @@ endpoints = ["/containers/*/logs"]
         assert!(PolicyLoader::new(Some(path), &profile).load().is_err());
     }
 
+    #[cfg(not(feature = "yaml"))]
+    #[test]
+    fn without_the_feature_yaml_is_refused_by_name() {
+        let error = parse_document(Path::new("p.yaml"), "include:\n").unwrap_err();
+        assert!(error.to_string().contains("no YAML support"), "{error}");
+    }
+
+    #[cfg(feature = "yaml")]
     #[test]
     fn parses_the_same_policy_from_toml_and_yaml() {
         let toml_doc = parse_document(
@@ -371,6 +386,7 @@ include:
         }
     }
 
+    #[cfg(feature = "yaml")]
     #[test]
     fn accepts_the_yml_spelling() {
         assert!(
@@ -387,6 +403,7 @@ include:
         );
     }
 
+    #[cfg(feature = "yaml")]
     #[test]
     fn malformed_yaml_is_an_error_not_an_empty_policy() {
         assert!(parse_document(Path::new("p.yaml"), "include: [unclosed").is_err());
@@ -471,6 +488,45 @@ include:
             compatibility_filter(&env, &SecurityProfile::ContainerRuntime)
                 .unwrap()
                 .is_none()
+        );
+    }
+
+    /// The `KEY=value` pairs from an example env file, comments skipped.
+    fn env_file(name: &str) -> HashMap<String, String> {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("examples")
+            .join(name);
+        let contents = std::fs::read_to_string(&path).expect("example env file");
+
+        contents
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty() && !line.starts_with('#'))
+            .filter_map(|line| line.split_once('='))
+            .map(|(key, value)| (key.trim().to_owned(), value.trim().to_owned()))
+            .collect()
+    }
+
+    #[test]
+    fn env_example_produces_the_policy_it_describes() {
+        let env = env_file("env-modifiers.env");
+        assert_eq!(
+            env.get("DOCKER_PROXY_PROFILE").map(String::as_str),
+            Some("read-only")
+        );
+
+        let mut filter = SecurityFilter::for_profile(&SecurityProfile::ReadOnly);
+        apply_environment(&mut filter, &env);
+
+        assert!(filter.check("GET", "/images/abc/json").is_ok());
+        assert!(filter.check("GET", "/images/abc/history").is_ok());
+        assert!(filter.check("GET", "/version").is_ok());
+
+        assert!(filter.check("GET", "/containers/abc/logs").is_err());
+        assert!(filter.check("GET", "/containers/abc/top").is_err());
+        assert!(
+            filter.check("POST", "/containers/create").is_err(),
+            "read-only refuses writes whatever else is set"
         );
     }
 

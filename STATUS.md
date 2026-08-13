@@ -11,8 +11,9 @@ The remaining work is standards conformance, not features.
 
 ## In Place
 
-**Policy** — default-deny filter with `default`, `read-only`, and
-`container-runtime` profiles; wildcard matcher; TOML or YAML `allow`/`deny`/
+**Policy** — default-deny filter with `default`, `read-only`,
+`container-runtime`, and `none` profiles; wildcard matcher; TOML or YAML
+`allow`/`deny`/
 `include`/`exclude`; environment modifiers; API-version normalization;
 create-body inspection. `deny` and `exclude` hold independent rules, so
 separate sources cannot merge into one narrower condition.
@@ -53,8 +54,9 @@ with SHA-pinned actions and `--locked`; releases carry an SBOM, max-mode
 provenance, and a signed SLSA attestation; OpenSSF Scorecard runs weekly;
 Dependabot covers cargo, actions, and docker.
 
-**Tests** — 69 passing (61 unit, 4 integration against a mock socket, 4
-asserting the shipped examples still behave as documented).
+**Tests** — 75 passing (64 unit, 4 integration against a mock socket, 5
+asserting the shipped examples still behave as documented, 2 checking every
+shipped endpoint pattern against the real Docker Engine API surface).
 
 ## Known Gaps
 Ordered by the waves in [`docs/standards.md`](docs/standards.md#next-steps).
@@ -85,6 +87,9 @@ the metric is in [`docs/standards.md`](docs/standards.md#selection-criteria).
 | Image | 1.92 MiB | < 10 MB |
 | Dependency tree | 125 crates | < 130 |
 
+`--no-default-features` drops the YAML parser: 1.79 MiB and 115 crates, so the
+`yaml` feature costs 458 KiB and 10 crates.
+
 ## Decisions Log
 | Date | Decision | Choice | Rationale |
 |------|----------|--------|-----------|
@@ -110,3 +115,6 @@ the metric is in [`docs/standards.md`](docs/standards.md#selection-criteria).
 | 2026-08-12 | Container `USER` | None, documented | The socket is `root:docker 0660`, so a fixed UID fails on most hosts. Operators pass their own UID and docker GID |
 | 2026-08-13 | YAML parser | `serde-saphyr` | The only serde-native YAML crate that is pure Rust, 1.0, and maintained; panic-free, which the `panic = "abort"` profile requires |
 | 2026-08-13 | Section variables vs profiles | Replace, and refuse the combination | They describe a whole policy; merging them over a profile would grant more than the operator asked for |
+| 2026-08-13 | Empty default profile | No — added `none` instead | Default-deny is already satisfied by a curated allow list. Shipping a proxy that permits nothing pushes every operator to write a policy from scratch, and copied-in over-broad rules are the likelier outcome than a considered narrow one. `none` serves those who want it |
+| 2026-08-13 | Listen address | `--bind`, loopback default | The port has no authentication, so a network-reachable default hands over the daemon. The image overrides it, where exposure is already mediated by published ports |
+| 2026-08-13 | YAML as a feature | Optional, on by default | Costs 458 KiB and 10 crates. Default-on so a documented format cannot vanish with a build flag |

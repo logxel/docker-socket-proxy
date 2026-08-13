@@ -19,9 +19,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   them; setting them alongside `--profile` is refused rather than silently
   resolved. Verdicts are checked differentially against the reference
   implementation.
-- Worked examples for create-body inspection, section-style YAML grants, and
-  two compose deployments — each asserted by `tests/examples.rs`, so a shipped
-  example cannot drift from what it documents.
+- **`--bind`** (`DOCKER_PROXY_BIND`), defaulting to loopback. The port has no
+  authentication, so a network-reachable default handed the daemon to anyone who
+  found it. The image sets `0.0.0.0`, where published ports control exposure.
+  Any IPv4 or IPv6 literal is accepted. **Breaking** for anyone running the
+  binary directly and connecting from another host; set `--bind 0.0.0.0`.
+- **`none` profile**, which grants nothing. Every other profile merges its
+  grants with your file, so a file alone could not express "this and nothing
+  more". Starting from `none` makes the allowlist the complete policy.
+- **`yaml` build feature**, on by default. `--no-default-features` drops the
+  parser for a build 458 KiB and 10 crates smaller; a YAML allowlist given to
+  such a build is refused by name rather than silently ignored.
+- Worked examples for create-body inspection, section-style YAML grants,
+  environment-only configuration, and two compose deployments — each asserted by
+  `tests/examples.rs`, so a shipped example cannot drift from what it documents.
+- `tests/api_surface.rs` checks every shipped endpoint pattern against the
+  Docker Engine API path list, so a pattern that matches no real endpoint fails
+  the build instead of reading as policy that does nothing.
+
+### Fixed
+- **`/containers/*/delete` was dead policy in the `default` profile.** Container
+  removal is `DELETE /containers/{id}`, not a subpath, so the deny rule never
+  matched. Nothing was reachable through it on its own — the default allow list
+  has no `DELETE` — but adding `DELETE` to the allow methods would have exposed
+  container removal that the deny list appeared to cover. Now `/containers/*`.
 
 ### Changed
 - **`deny` and `exclude` now hold independent rules.** Each source contributed

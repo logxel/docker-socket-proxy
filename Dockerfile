@@ -55,8 +55,14 @@ COPY --from=builder /docker-socket-proxy /docker-socket-proxy
 
 EXPOSE 2375
 
+# The binary defaults to loopback, which would answer nothing outside this
+# container. Exposure here is what the operator publishes with -p, so the
+# wildcard is the useful default and the narrower one is theirs to set.
+ENV DOCKER_PROXY_BIND=0.0.0.0
+
 # The binary probes itself: there is no shell or curl here to call /healthz
-# with. It reads DOCKER_PROXY_PORT, so a custom port needs no change here.
+# with. It reads DOCKER_PROXY_PORT and DOCKER_PROXY_BIND, so a custom port or
+# address needs no change here.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=2s --retries=3 \
     CMD ["/docker-socket-proxy", "--health-check"]
 

@@ -32,6 +32,8 @@ jobs:
         run: cargo fmt --all --check
       - name: Clippy (strict)
         run: cargo clippy --all-targets --locked -- -D warnings
+      - name: Clippy (no default features)
+        run: cargo clippy --all-targets --locked --no-default-features -- -D warnings
 
   # ── Tests ─────────────────────────────────────────────────────
   test:
@@ -43,6 +45,10 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
       - name: Run tests
         run: cargo test --all-targets --locked
+      # The minimal build drops the YAML parser, so it must still refuse a
+      # YAML allowlist by name rather than fail to compile.
+      - name: Run tests without optional features
+        run: cargo test --all-targets --locked --no-default-features
 
   # ── Supply Chain ──────────────────────────────────────────────
   supply-chain:
