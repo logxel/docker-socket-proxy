@@ -1,0 +1,189 @@
+name: Release
+
+on:
+  push:
+    tags: ['v[0-9]*']
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: 'Existing tag to backfill a signed release for (e.g. v0.3.0)'
+        type: string
+        default: ''
+
+# Least privilege by default; jobs opt into more only where they need it.
+permissions:
+  contents: read
+
+env:
+  NAME: docker-socket-proxy
+
+jobs:
+  # ---- Build & Sign -------------------------------------------------------
+  # One leg per binary (amd64+arm64 x minimal+full), mirroring the image
+  # matrix so every published image has a byte-identical signed binary asset.
+  build-sign:
+    name: Build & Sign (${{ matrix.target }}, ${{ matrix.variant }})
+    # A dispatch with no (or non-v) ref must not start a build; the in-step
+    # anchored grep check below is the authoritative ^v[0-9]+ validation.
+    if: github.event_name == 'push' || startsWith(inputs.ref, 'v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      # cosign keyless exchanges the GitHub OIDC token for a short-lived
+      # Sigstore certificate, which requires the job to be able to mint one.
+      id-token: write
+      # attest-build-provenance uploads SLSA provenance to the GitHub
+      # attestations API, which needs a dedicated write permission (mirrors
+      # ci.yml's build-push job).
+      attestations: write
+    strategy:
+      # The four binaries are independent; one failing must not cancel the
+      # others, and the release job still waits for every leg to upload.
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64
+            platform: linux/amd64
+            variant: minimal
+          - target: x86_64
+            platform: linux/amd64
+            variant: full
+          - target: aarch64
+            platform: linux/arm64
+            variant: minimal
+          - target: aarch64
+            platform: linux/arm64
+            variant: full
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event_name == 'push' && github.ref_name || inputs.ref }}
+
+      - name: Compute asset name
+        id: meta
+        env:
+          REF: ${{ github.event_name == 'push' && github.ref_name || inputs.ref }}
+          TARGET: ${{ matrix.target }}
+          VARIANT: ${{ matrix.variant }}
+        run: |
+          # Anchored validation before the ref is ever quoted into a shell
+          # command, closing the injection surface on the dispatch input.
+          if ! printf '%s' "$REF" | grep -Eq '^v[0-9]+(\.[0-9]+)*$'; then
+            echo "::error::ref '$REF' does not match ^v[0-9]+(\.[0-9]+)*$"
+            exit 1
+          fi
+          # The default (minimal) binary is bare; the YAML-enabled one carries
+          # -yaml, exactly mirroring the image's suffix=-yaml tag.
+          ASSET="$NAME-$REF-$TARGET"
+          [ "$VARIANT" = full ] && ASSET="${ASSET}-yaml"
+          echo "asset=$ASSET" >> "$GITHUB_OUTPUT"
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@96fe6ef7f33517b61c61be40b68a1882f3264fb8 # v4.2.0
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+
+      # Reusing the image's own builder stage (not a second toolchain) is what
+      # guarantees the signed binary byte-matches the published image.
+      - name: Build static binary
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: .
+          target: builder
+          platforms: ${{ matrix.platform }}
+          build-args: |
+            VARIANT=${{ matrix.variant }}
+          outputs: type=local,dest=${{ runner.temp }}/dist
+
+      - name: Rename binary to asset name
+        env:
+          ASSET: ${{ steps.meta.outputs.asset }}
+          DIST: ${{ runner.temp }}/dist
+        run: mv "$DIST/docker-socket-proxy" "$DIST/$ASSET"
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+
+      - name: Sign binary (keyless)
+        env:
+          ASSET: ${{ steps.meta.outputs.asset }}
+          DIST: ${{ runner.temp }}/dist
+        run: |
+          cosign sign-blob --yes \
+            --output-signature "$DIST/$ASSET.sig" \
+            --output-certificate "$DIST/$ASSET.pem" \
+            "$DIST/$ASSET"
+
+      # Real SLSA provenance, but API-based rather than a release asset, so
+      # scorecard's file-suffix probe does not see it; the `.sig` uploaded
+      # alongside is what carries the Signed-Releases score.
+      - name: Attest SLSA build provenance
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: ${{ runner.temp }}/dist/${{ steps.meta.outputs.asset }}
+
+      - name: Upload signed assets
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ${{ matrix.target }}-${{ matrix.variant }}
+          path: |
+            ${{ runner.temp }}/dist/${{ steps.meta.outputs.asset }}
+            ${{ runner.temp }}/dist/${{ steps.meta.outputs.asset }}.sig
+            ${{ runner.temp }}/dist/${{ steps.meta.outputs.asset }}.pem
+          if-no-files-found: error
+
+  # ---- Publish Release -----------------------------------------------------
+  # Runs only after every build-sign leg has uploaded, and is the sole job that
+  # creates the release.
+  release:
+    name: Publish Release
+    needs: build-sign
+    if: github.event_name == 'push' || startsWith(inputs.ref, 'v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event_name == 'push' && github.ref_name || inputs.ref }}
+          # Full history so `git rev-list` can resolve a backfill tag that is
+          # not the default-branch tip.
+          fetch-depth: 0
+
+      - name: Resolve tag and target commit
+        id: meta
+        env:
+          REF: ${{ github.event_name == 'push' && github.ref_name || inputs.ref }}
+        run: |
+          if ! printf '%s' "$REF" | grep -Eq '^v[0-9]+(\.[0-9]+)*$'; then
+            echo "::error::ref '$REF' does not match ^v[0-9]+(\.[0-9]+)*$"
+            exit 1
+          fi
+          # --target anchors the release to the commit the tag names. Without
+          # it, backfilling an existing tag could attach assets to the default
+          # branch tip instead of the tagged commit.
+          TAG_SHA="$(git rev-list -n1 "$REF")"
+          [ -n "$TAG_SHA" ] || { echo "::error::no commit for '$REF'"; exit 1; }
+          {
+            echo "tag=$REF"
+            echo "tag_sha=$TAG_SHA"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Create release and upload assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.meta.outputs.tag }}
+          TAG_SHA: ${{ steps.meta.outputs.tag_sha }}
+        run: |
+          # Backfill re-dispatch is a no-op when the tag is already released.
+          gh release view "$TAG" >/dev/null 2>&1 \
+            || gh release create "$TAG" --target "$TAG_SHA" --generate-notes
+          find dist -maxdepth 1 -type f -print0 \
+            | xargs -0 -r gh release upload "$TAG"

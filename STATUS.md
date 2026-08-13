@@ -50,9 +50,11 @@ the policy filter. `--health-check` probes a running proxy for the image's
 
 **Delivery** — multi-stage musl → scratch image (1.92 MiB), multi-arch,
 digest-pinned builder, OCI labels; CI runs fmt, clippy, tests, and `cargo-deny`
-with SHA-pinned actions and `--locked`; releases carry an SBOM, max-mode
-provenance, and a signed SLSA attestation; OpenSSF Scorecard runs weekly;
-Dependabot covers cargo, actions, and docker.
+with SHA-pinned actions and `--locked`; image releases carry an SBOM, max-mode
+provenance, and a signed SLSA attestation; GitHub Releases ship cosign
+keyless-signed static binaries with SLSA provenance via GitHub artifact
+attestations; OpenSSF Scorecard runs weekly; Dependabot covers cargo, actions,
+and docker.
 
 **Validation** — policy methods and endpoints are checked against the Docker
 Engine API surface (`src/docker_api.rs`) at startup; anything matching no real

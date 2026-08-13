@@ -75,7 +75,7 @@ Documentation, CI, and packaging. No effect on the binary.
 ### Supply chain
 | Standard | What we do |
 |---|---|
-| **SLSA v1.0** provenance | `actions/attest-build-provenance`; Build L2 immediately, L3 via reusable workflow |
+| **SLSA v1.0** provenance | `actions/attest-build-provenance` (GitHub artifact attestations) for both the image and release binaries; `.intoto.jsonl` assets not adopted — the only emitter, `slsa-github-generator`, is deprecated and tag-pinned, contradicting SHA-pinning |
 | **SPDX / CycloneDX** SBOM | `docker/build-push-action` with `sbom: true`, `provenance: mode=max` |
 | **Sigstore / cosign** | Keyless signing via GitHub OIDC |
 | **OpenSSF Scorecard** | Weekly run publishing to the OpenSSF API, with all actions pinned by commit SHA |

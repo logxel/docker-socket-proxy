@@ -286,6 +286,11 @@ Code-fixable checks, in place:
   request-path decision surface and policy parsing (`path_normalizer`,
   `policy_parse`), exercised by a scheduled job in
   [`.github/workflows/fuzz.yml`](.github/workflows/fuzz.yml).
+- **Signed-Releases** — [`.github/workflows/release.yml`](.github/workflows/release.yml)
+  publishes GitHub Releases with cosign keyless-signed static binaries
+  (`.sig`/`.pem`) and GitHub artifact attestations. Scores 8/10; the
+  provenance-probe decision is recorded in
+  [`docs/standards.md`](docs/standards.md).
 
 The remaining checks need repository or account settings, not code:
 
@@ -293,8 +298,6 @@ The remaining checks need repository or account settings, not code:
 - **Branch-Protection** — branch-protection rules enabled on `main`.
 - **Maintained** — time-gated; the repository ages into this one.
 - **Contributors** — contributors from more than one organization.
-- **Signed-Releases** — a published release; signing is already wired into the
-  release workflow.
 - **CII-Best-Practices** — self-certification at
   [bestpractices.dev](https://www.bestpractices.dev).
 
