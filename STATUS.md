@@ -42,7 +42,7 @@ and reason (NIST SP 800-53 AU-2/AU-3).
 the policy filter. `--health-check` probes a running proxy for the image's
 `HEALTHCHECK`, which `scratch` has no shell to do.
 
-**Delivery** — multi-stage musl → scratch image (1.87 MiB), multi-arch,
+**Delivery** — multi-stage musl → scratch image (1.92 MiB), multi-arch,
 digest-pinned builder, OCI labels; CI runs fmt, clippy, tests, and `cargo-deny`
 with SHA-pinned actions and `--locked`; releases carry an SBOM, max-mode
 provenance, and a signed SLSA attestation; OpenSSF Scorecard runs weekly;
