@@ -63,11 +63,139 @@ impl<'a> PolicyLoader<'a> {
             }
         };
 
-        let mut filter = SecurityFilter::for_profile(self.profile);
+        let env: HashMap<String, String> = std::env::vars().collect();
+        let mut filter = match compatibility_filter(&env, self.profile)? {
+            Some(filter) => filter,
+            None => SecurityFilter::for_profile(self.profile),
+        };
         apply_document(&mut filter, document);
-        apply_environment(&mut filter, &std::env::vars().collect());
+        apply_environment(&mut filter, &env);
         Ok(filter)
     }
+}
+
+// ── Compatibility with section-variable socket proxies ─────────
+
+/// Docker API sections, keyed by the variable other socket proxies grant them
+/// with. Order is immaterial; each is an independent grant.
+const COMPAT_SECTIONS: &[(&str, &str)] = &[
+    ("AUTH", "/auth"),
+    ("BUILD", "/build"),
+    ("COMMIT", "/commit"),
+    ("CONFIGS", "/configs"),
+    ("CONTAINERS", "/containers"),
+    ("DISTRIBUTION", "/distribution"),
+    ("EVENTS", "/events"),
+    ("EXEC", "/exec"),
+    ("GRPC", "/grpc"),
+    ("IMAGES", "/images"),
+    ("INFO", "/info"),
+    ("NETWORKS", "/networks"),
+    ("NODES", "/nodes"),
+    ("PING", "/_ping"),
+    ("PLUGINS", "/plugins"),
+    ("SECRETS", "/secrets"),
+    ("SERVICES", "/services"),
+    ("SESSION", "/session"),
+    ("SWARM", "/swarm"),
+    ("SYSTEM", "/system"),
+    ("TASKS", "/tasks"),
+    ("VERSION", "/version"),
+    ("VOLUMES", "/volumes"),
+];
+
+/// Container operations granted individually, without opening `/containers`.
+const COMPAT_OPERATIONS: &[(&str, &[&str])] = &[
+    (
+        "ALLOW_RESTARTS",
+        &[
+            "/containers/*/stop",
+            "/containers/*/restart",
+            "/containers/*/kill",
+        ],
+    ),
+    ("ALLOW_START", &["/containers/*/start"]),
+    ("ALLOW_STOP", &["/containers/*/stop"]),
+    ("ALLOW_PAUSE", &["/containers/*/pause"]),
+    ("ALLOW_UNPAUSE", &["/containers/*/unpause"]),
+];
+
+/// Sections granted unless the operator turns them off, as in the original.
+const COMPAT_DEFAULT_ON: &[&str] = &["EVENTS", "PING", "VERSION"];
+
+/// Build a filter from the section variables Tecnativa's socket proxy uses, or
+/// `None` if the operator set none of them.
+///
+/// These variables describe a whole policy rather than a modifier, so they
+/// replace the profile defaults instead of layering over them — otherwise
+/// `CONTAINERS=1` would also grant everything the profile happened to allow.
+/// A profile selected alongside them is therefore a contradiction, and refused.
+///
+/// `POST=0` restricts the grants to `GET` and `HEAD`; `POST=1` opens them to
+/// every method, since the original's gate is the only thing standing between
+/// a granted section and the daemon.
+fn compatibility_filter(
+    env: &HashMap<String, String>,
+    profile: &SecurityProfile,
+) -> Result<Option<SecurityFilter>, ProxyError> {
+    let names: Vec<&str> = COMPAT_SECTIONS
+        .iter()
+        .map(|(name, _)| *name)
+        .chain(COMPAT_OPERATIONS.iter().map(|(name, _)| *name))
+        .chain(std::iter::once("POST"))
+        .filter(|name| env.contains_key(*name))
+        .collect();
+
+    if names.is_empty() {
+        return Ok(None);
+    }
+    if !matches!(profile, SecurityProfile::Default) {
+        return Err(ProxyError::Config(format!(
+            "compatibility variables ({}) define a complete policy and cannot be \
+             combined with the {profile:?} profile: pick one",
+            names.join(", ")
+        )));
+    }
+
+    let granted = |name: &str| match env.get(name) {
+        Some(value) => is_enabled(value),
+        None => COMPAT_DEFAULT_ON.contains(&name),
+    };
+
+    let mut endpoints = Vec::new();
+    for (name, section) in COMPAT_SECTIONS {
+        if granted(name) {
+            // Both forms, because our patterns take a trailing `/` to mean
+            // prefix while a bare path is exact.
+            endpoints.push((*section).to_owned());
+            endpoints.push(format!("{section}/"));
+        }
+    }
+    for (name, paths) in COMPAT_OPERATIONS {
+        if granted(name) {
+            endpoints.extend(paths.iter().map(|path| (*path).to_owned()));
+        }
+    }
+
+    // An empty method list is a wildcard, which is what lifting the gate means.
+    let methods = if granted("POST") {
+        Vec::new()
+    } else {
+        vec!["GET".to_owned(), "HEAD".to_owned()]
+    };
+
+    let mut filter = SecurityFilter::deny_all();
+    filter.allow_mut().extend(Some(methods), Some(endpoints));
+    Ok(Some(filter))
+}
+
+/// Read a variable the way the shell-style proxies do: only an affirmative
+/// spelling enables, so a typo fails closed.
+fn is_enabled(value: &str) -> bool {
+    matches!(
+        value.trim().to_ascii_lowercase().as_str(),
+        "1" | "true" | "yes" | "on"
+    )
 }
 
 /// Parse a policy document, choosing the format from the file extension.
@@ -262,6 +390,88 @@ include:
     #[test]
     fn malformed_yaml_is_an_error_not_an_empty_policy() {
         assert!(parse_document(Path::new("p.yaml"), "include: [unclosed").is_err());
+    }
+
+    fn compat(vars: &[(&str, &str)]) -> SecurityFilter {
+        let env = vars
+            .iter()
+            .map(|(k, v)| ((*k).to_owned(), (*v).to_owned()))
+            .collect();
+        compatibility_filter(&env, &SecurityProfile::Default)
+            .unwrap()
+            .expect("variables were set")
+    }
+
+    #[test]
+    fn compatibility_variables_grant_only_their_own_sections() {
+        let filter = compat(&[("CONTAINERS", "1")]);
+        assert!(filter.check("GET", "/containers/json").is_ok());
+        assert!(filter.check("GET", "/containers/abc/logs").is_ok());
+        assert!(
+            filter.check("GET", "/info").is_err(),
+            "the default profile's endpoints must not leak in"
+        );
+    }
+
+    #[test]
+    fn post_gates_writes_but_not_head() {
+        let closed = compat(&[("CONTAINERS", "1")]);
+        assert!(closed.check("POST", "/containers/create").is_err());
+        assert!(closed.check("DELETE", "/containers/abc").is_err());
+        assert!(
+            closed.check("HEAD", "/containers/json").is_ok(),
+            "the original's gate reads HEAD as a GET"
+        );
+
+        let open = compat(&[("CONTAINERS", "1"), ("POST", "1")]);
+        assert!(open.check("POST", "/containers/create").is_ok());
+        assert!(open.check("DELETE", "/containers/abc").is_ok());
+    }
+
+    #[test]
+    fn events_ping_and_version_are_granted_unless_turned_off() {
+        let filter = compat(&[("CONTAINERS", "1")]);
+        for path in ["/events", "/_ping", "/version"] {
+            assert!(filter.check("GET", path).is_ok(), "{path}");
+        }
+        assert!(
+            compat(&[("PING", "0")]).check("GET", "/_ping").is_err(),
+            "an explicit 0 still turns one off"
+        );
+    }
+
+    #[test]
+    fn zero_grants_nothing_and_typos_fail_closed() {
+        for value in ["0", "false", "", "enabled", "sure"] {
+            let filter = compat(&[("SECRETS", value), ("PING", "1")]);
+            assert!(filter.check("GET", "/secrets").is_err(), "SECRETS={value}");
+            assert!(filter.check("GET", "/_ping").is_ok());
+        }
+    }
+
+    #[test]
+    fn individual_operations_grant_without_opening_containers() {
+        let filter = compat(&[("ALLOW_START", "1"), ("POST", "1")]);
+        assert!(filter.check("POST", "/containers/abc/start").is_ok());
+        assert!(filter.check("POST", "/containers/abc/stop").is_err());
+        assert!(filter.check("GET", "/containers/json").is_err());
+    }
+
+    #[test]
+    fn compatibility_variables_conflict_with_an_explicit_profile() {
+        let env = HashMap::from([("CONTAINERS".to_owned(), "1".to_owned())]);
+        let error = compatibility_filter(&env, &SecurityProfile::ReadOnly).unwrap_err();
+        assert!(error.to_string().contains("cannot be combined"), "{error}");
+    }
+
+    #[test]
+    fn absent_compatibility_variables_leave_the_profile_alone() {
+        let env = HashMap::from([("PATH".to_owned(), "/usr/bin".to_owned())]);
+        assert!(
+            compatibility_filter(&env, &SecurityProfile::ContainerRuntime)
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[test]

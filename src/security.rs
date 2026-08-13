@@ -174,6 +174,17 @@ impl SecurityFilter {
         Self::for_profile(&SecurityProfile::Default)
     }
 
+    /// Create a filter granting nothing, for a policy defined entirely by its
+    /// caller rather than layered over a profile.
+    pub fn deny_all() -> Self {
+        Self {
+            allow: RuleSet::default(),
+            deny: RuleList::default(),
+            exclude: RuleList::default(),
+            profile: SecurityProfile::Default,
+        }
+    }
+
     /// Create a filter for a built-in security profile.
     pub fn for_profile(profile: &SecurityProfile) -> Self {
         let mut allow = RuleSet::new(READ_METHODS, READABLE_ENDPOINTS);
