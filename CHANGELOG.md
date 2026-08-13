@@ -27,6 +27,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - RFC 3986 §6 path normalization before policy matching: dot segments resolved,
   empty segments collapsed, percent-encoding decoded. Encoded path separators
   are rejected, since RFC 3986 §2.2 makes `%2F` distinct from `/`.
+- **`GET /metrics`** in Prometheus text exposition, counting requests by policy
+  outcome, and **`GET /healthz`** in `application/health+json` reporting whether
+  the Docker socket accepts a connection. Both are answered locally, outside the
+  policy filter, and are unauthenticated like the rest of the port.
+- **`--health-check`**, which probes a running proxy over loopback and exits
+  0 or 1, plus a container `HEALTHCHECK` that calls it. The `scratch` image has
+  no shell or curl to health-check with otherwise.
 - **101-upgrade passthrough**, so `docker exec` works through the proxy —
   stdin, stdout, and the exit status. `container-runtime` gained
   `GET /exec/*/json` and `POST /exec/*/resize`, without which the CLI cannot

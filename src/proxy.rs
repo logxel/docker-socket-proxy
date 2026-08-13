@@ -19,6 +19,7 @@
 
 use std::collections::HashSet;
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Duration;
 
 use axum::Router;
@@ -26,6 +27,7 @@ use axum::body::Body;
 use axum::extract::{Request, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::Response;
+use axum::routing::get;
 use hyper::upgrade::OnUpgrade;
 use hyper_util::client::legacy::Client;
 use hyper_util::rt::{TokioExecutor, TokioIo};
@@ -37,6 +39,7 @@ use tracing::info;
 use crate::config::Config;
 use crate::error::ProxyError;
 use crate::middleware::SecurityLayer;
+use crate::observability::{self, Metrics, ObservabilityState};
 use crate::policy::PolicyLoader;
 use crate::security::SecurityFilter;
 
@@ -83,11 +86,24 @@ fn is_hop_by_hop(name: &str, connection_specific: &HashSet<String>) -> bool {
 ///
 /// The timeout is outermost so it bounds policy evaluation as well as the
 /// upstream call.
-fn build_router(state: AppState, security: SecurityLayer, timeout: Option<Duration>) -> Router {
-    let router = Router::new()
+fn build_router(
+    state: AppState,
+    security: SecurityLayer,
+    timeout: Option<Duration>,
+    observability: ObservabilityState,
+) -> Router {
+    let proxied = Router::new()
         .fallback(proxy_handler)
         .with_state(state)
         .layer(security);
+
+    // Merged over the proxy rather than layered under it: these are answered
+    // here, so the filter has no endpoint to decide about.
+    let router = Router::new()
+        .route("/metrics", get(observability::metrics))
+        .route("/healthz", get(observability::health))
+        .with_state(observability)
+        .merge(proxied);
 
     match timeout {
         // 504 rather than 408: the deadline that expired is ours to the daemon,
@@ -106,11 +122,16 @@ pub async fn serve(config: Config) -> Result<(), ProxyError> {
     let state = AppState {
         docker_socket: config.socket.clone(),
     };
+    let metrics = Arc::new(Metrics::default());
 
     let router = build_router(
         state,
-        SecurityLayer::new(filter, config.max_body_bytes),
+        SecurityLayer::new(filter, config.max_body_bytes, Arc::clone(&metrics)),
         (config.timeout_secs > 0).then(|| Duration::from_secs(config.timeout_secs)),
+        ObservabilityState {
+            metrics,
+            docker_socket: config.socket.clone(),
+        },
     );
     let addr = format!("0.0.0.0:{}", config.port);
     let listener = TcpListener::bind(&addr)
@@ -131,10 +152,17 @@ pub async fn serve(config: Config) -> Result<(), ProxyError> {
 /// Create a router for integration testing.
 #[doc(hidden)]
 pub fn test_router(docker_socket: PathBuf, security: SecurityFilter) -> Router {
+    let metrics = Arc::new(Metrics::default());
     build_router(
-        AppState { docker_socket },
-        SecurityLayer::new(security, 1024 * 1024),
+        AppState {
+            docker_socket: docker_socket.clone(),
+        },
+        SecurityLayer::new(security, 1024 * 1024, Arc::clone(&metrics)),
         None,
+        ObservabilityState {
+            metrics,
+            docker_socket,
+        },
     )
 }
 

@@ -37,13 +37,18 @@ Optional `--timeout-secs` deadline, disabled by default.
 **Audit** — every denial emits a structured `warn` with method, path, profile,
 and reason (NIST SP 800-53 AU-2/AU-3).
 
+**Observability** — `GET /metrics` in Prometheus text exposition and
+`GET /healthz` in `application/health+json`, both answered locally and outside
+the policy filter. `--health-check` probes a running proxy for the image's
+`HEALTHCHECK`, which `scratch` has no shell to do.
+
 **Delivery** — multi-stage musl → scratch image (1.87 MiB), multi-arch,
 digest-pinned builder, OCI labels; CI runs fmt, clippy, tests, and `cargo-deny`
 with SHA-pinned actions and `--locked`; releases carry an SBOM, max-mode
 provenance, and a signed SLSA attestation; OpenSSF Scorecard runs weekly;
 Dependabot covers cargo, actions, and docker.
 
-**Tests** — 50 passing (46 unit, 4 integration against a mock socket).
+**Tests** — 53 passing (49 unit, 4 integration against a mock socket).
 
 ## Known Gaps
 Ordered by the waves in [`docs/standards.md`](docs/standards.md#next-steps).
@@ -52,7 +57,6 @@ Identifiers are stable; closed gaps are not renumbered.
 | # | Gap | Location |
 |---|-----|----------|
 | 12 | No authentication of any kind on the listening port (OWASP API2) | `src/proxy.rs` |
-| 15 | No `/metrics` or health endpoint | `src/proxy.rs` |
 | 16 | No compatibility shim for the Tecnativa/linuxserver environment variables | `src/policy.rs` |
 | 17 | Denied endpoints are not mapped to NIST SP 800-190 / CIS control IDs | `docs/` |
 
@@ -60,7 +64,7 @@ Identifiers are stable; closed gaps are not renumbered.
 Nothing.
 
 ## Next Steps
-**Wave 3** (capability): gap 11 is closed. Remaining are 15, 16, 17, then 12.
+**Wave 3** (capability): gaps 11 and 15 are closed. Remaining are 16, 17, then 12.
 See [`docs/standards.md`](docs/standards.md#next-steps).
 
 ## Blockers
@@ -72,8 +76,8 @@ the metric is in [`docs/standards.md`](docs/standards.md#selection-criteria).
 
 | Metric | Current | Budget |
 |---|---:|---:|
-| Release binary | 1.76 MiB | < 8 MB |
-| Image | 1.87 MiB | < 10 MB |
+| Release binary | 1.80 MiB | < 8 MB |
+| Image | 1.92 MiB | < 10 MB |
 | Dependency tree | 121 crates | < 130 |
 
 ## Decisions Log
