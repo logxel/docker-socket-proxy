@@ -1,0 +1,25 @@
+# A workload orchestrator that launches containers — Dagster's
+# `DockerRunLauncher` is the case this profile was written for.
+#
+# The allowlist narrows the profile rather than widening it; create bodies are
+# inspected regardless of what the file says.
+
+services:
+  docker-socket-proxy:
+    image: ghcr.io/logxel/docker-socket-proxy:0.3.0
+    command:
+      - --profile=container-runtime
+      - --allowlist=/etc/proxy/create-inspection.toml
+      # Build contexts are the large case, and this policy excludes /build.
+      - --max-body-bytes=4194304
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ../create-inspection.toml:/etc/proxy/create-inspection.toml:ro
+    ports:
+      - "127.0.0.1:2375:2375"
+    healthcheck:
+      test: ["CMD", "/docker-socket-proxy", "--health-check"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    restart: unless-stopped

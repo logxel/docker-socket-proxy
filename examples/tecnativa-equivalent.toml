@@ -1,0 +1,27 @@
+# Exactly what `CONTAINERS=1 IMAGES=1 POST=1` grants, and nothing else.
+#
+# Run with `--profile none`, which starts from an empty policy so this file is
+# the whole of it. Under any other profile the built-in grants merge in and the
+# equivalence no longer holds.
+#
+# This is the migration target for the section variables: identical behaviour,
+# but every grant is visible and can be narrowed one line at a time.
+
+[allow]
+# Section variables gate all methods behind one POST switch, so this is what
+# POST=1 actually opens. Deleting methods here is the first useful narrowing.
+methods = ["GET", "HEAD", "POST", "PUT", "DELETE"]
+endpoints = [
+  # A trailing "/" is a prefix; the bare form matches the collection itself.
+  "/containers",
+  "/containers/",
+  "/images",
+  "/images/",
+  # Granted unless EVENTS, PING, or VERSION is set to 0.
+  "/events",
+  "/events/",
+  "/_ping",
+  "/_ping/",
+  "/version",
+  "/version/",
+]

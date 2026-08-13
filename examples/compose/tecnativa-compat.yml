@@ -1,0 +1,32 @@
+# Drop-in replacement for Tecnativa's socket proxy: same variables, same
+# verdicts. Point an existing compose file at this image and nothing else
+# changes.
+#
+# Section variables replace the built-in profile rather than adding to it, so
+# what is listed here is the whole policy. Setting `--profile` alongside them is
+# refused, since the two describe the same thing differently.
+
+services:
+  docker-socket-proxy:
+    image: ghcr.io/logxel/docker-socket-proxy:0.3.0
+    environment:
+      CONTAINERS: 1
+      IMAGES: 1
+      NETWORKS: 1
+      # Without this, only GET and HEAD reach the sections above.
+      POST: 1
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    ports:
+      - "127.0.0.1:2375:2375"
+    restart: unless-stopped
+
+  # Reaches the daemon only through the proxy, which is the point: it never
+  # holds the socket itself.
+  client:
+    image: docker:cli
+    environment:
+      DOCKER_HOST: tcp://docker-socket-proxy:2375
+    depends_on:
+      - docker-socket-proxy
+    command: ["docker", "ps"]

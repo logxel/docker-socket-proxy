@@ -8,6 +8,7 @@
 //! - **Invariant**: Neither endpoint reaches the Docker socket, so neither can
 //!   be used to probe it beyond the reachability that `/healthz` reports.
 
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -88,17 +89,28 @@ pub async fn health(State(state): State<ObservabilityState>) -> Response {
         .into_response()
 }
 
-/// Probe a running proxy over loopback and report whether it answered `pass`.
+/// Probe a running proxy and report whether it answered `pass`.
 ///
 /// Exists because the `scratch` image carries no shell or curl, so a container
 /// `HEALTHCHECK` has nothing else to call. Hand-rolled rather than pulling in an
 /// HTTP client, since one request against a known server does not need one.
-pub async fn probe(port: u16) -> Result<(), String> {
+///
+/// A wildcard bind is probed over loopback, which is reachable and does not
+/// depend on knowing the container's own address.
+pub async fn probe(bind: IpAddr, port: u16) -> Result<(), String> {
+    let target = if bind.is_unspecified() {
+        match bind {
+            IpAddr::V4(_) => IpAddr::V4(Ipv4Addr::LOCALHOST),
+            IpAddr::V6(_) => IpAddr::V6(Ipv6Addr::LOCALHOST),
+        }
+    } else {
+        bind
+    };
     let request =
         format!("GET /healthz HTTP/1.1\r\nHost: localhost:{port}\r\nConnection: close\r\n\r\n");
 
     let exchange = async {
-        let mut stream = TcpStream::connect(("127.0.0.1", port))
+        let mut stream = TcpStream::connect(SocketAddr::new(target, port))
             .await
             .map_err(|e| format!("connect failed: {e}"))?;
         stream
@@ -152,6 +164,6 @@ mod tests {
     #[tokio::test]
     async fn probe_reports_a_closed_port() {
         // Port 1 is privileged and unbound in the test environment.
-        assert!(probe(1).await.is_err());
+        assert!(probe(IpAddr::V4(Ipv4Addr::LOCALHOST), 1).await.is_err());
     }
 }

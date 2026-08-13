@@ -18,6 +18,7 @@
 //! ```
 
 use std::collections::HashSet;
+use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -133,8 +134,8 @@ pub async fn serve(config: Config) -> Result<(), ProxyError> {
             docker_socket: config.socket.clone(),
         },
     );
-    let addr = format!("0.0.0.0:{}", config.port);
-    let listener = TcpListener::bind(&addr)
+    let addr = SocketAddr::new(config.bind, config.port);
+    let listener = TcpListener::bind(addr)
         .await
         .map_err(|e| ProxyError::Docker(format!("failed to bind to {addr}: {e}")))?;
 

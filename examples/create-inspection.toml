@@ -1,0 +1,22 @@
+# Container creation with the body inspected, not just the endpoint allowed.
+#
+# Run with `--profile container-runtime`, which is what turns on inspection of
+# `POST /containers/create`. Endpoint rules alone cannot express this: the
+# difference between a safe create and a container escape is in the body.
+#
+# Rejected regardless of what this file allows:
+#   {"Image":"x","Cmd":[],"Privileged":true}          → escapes the container
+#   {"Image":"x","Cmd":[],"CapAdd":["SYS_ADMIN"]}     → same, by capability
+#   {"Image":"x","Cmd":[],"PidMode":"host"}           → host namespace
+#   {"Image":"x"}                                     → no Cmd
+#
+# Accepted:
+#   {"Image":"worker:1","Cmd":["run"]}
+#
+# Mounts are deliberately permitted; orchestrators require them, and this
+# profile is documented as trusted-caller-only.
+
+[exclude]
+# Nothing here needs to build images or write to a running container's
+# filesystem, and both are how a permitted create becomes arbitrary host code.
+endpoints = ["/build", "/commit", "/containers/*/archive"]

@@ -7,6 +7,7 @@
 //! - **Post-condition**: A returned `Config` is fully valid; invalid input exits
 //!   the process before the runtime starts rather than yielding partial state.
 
+use std::net::IpAddr;
 use std::path::PathBuf;
 
 use clap::Parser;
@@ -19,11 +20,22 @@ pub struct Config {
     #[arg(long, env = "DOCKER_PROXY_PORT", default_value = "2375")]
     pub port: u16,
 
+    /// Address to listen on.
+    ///
+    /// Loopback by default: the port has no authentication, so reaching it is
+    /// the whole authorization story. The image sets `0.0.0.0` because there
+    /// the container boundary and published ports control exposure instead.
+    /// `::` requires IPv6 to be enabled on the host.
+    #[arg(long, env = "DOCKER_PROXY_BIND", default_value = "127.0.0.1")]
+    pub bind: IpAddr,
+
     /// Path to the Docker Unix socket.
     #[arg(long, env = "DOCKER_SOCKET", default_value = "/var/run/docker.sock")]
     pub socket: PathBuf,
 
-    /// Path to a TOML allowlist configuration file, merged over the profile.
+    /// Path to a TOML or YAML allowlist file, merged over the profile.
+    ///
+    /// The format is taken from the extension: `.toml`, `.yaml`, or `.yml`.
     #[arg(long, env = "DOCKER_PROXY_ALLOWLIST")]
     pub allowlist: Option<PathBuf>,
 
@@ -73,6 +85,9 @@ pub enum SecurityProfile {
     Default,
     ReadOnly,
     ContainerRuntime,
+    /// Grants nothing, so an allowlist is the whole policy rather than an
+    /// addition to one.
+    None,
 }
 
 impl Config {

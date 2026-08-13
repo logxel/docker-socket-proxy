@@ -1,0 +1,27 @@
+# Section-style grants as an allowlist file, in YAML.
+#
+# Equivalent to `CONTAINERS=1 IMAGES=1 NETWORKS=1 VOLUMES=1` with POST off, but
+# only under `--profile none`. Every other profile merges its own grants in, so
+# `/info` and the rest of its read set would come along too.
+
+include:
+  methods:
+    - GET
+    - HEAD
+  endpoints:
+    # A trailing `/` means prefix; the bare form matches the collection itself.
+    - /containers
+    - /containers/
+    - /images
+    - /images/
+    - /networks
+    - /networks/
+    - /volumes
+    - /volumes/
+
+exclude:
+  # Prefix grants reach these, and both hand back more than an inspection
+  # client needs: process lists and full environment variables.
+  endpoints:
+    - /containers/*/top
+    - /containers/*/changes
