@@ -40,6 +40,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `tests/api_surface.rs` checks every shipped endpoint pattern against the
   Docker Engine API path list, so a pattern that matches no real endpoint fails
   the build instead of reading as policy that does nothing.
+- **Typo warnings for operator rules.** Methods and endpoints from an allowlist
+  file or the environment are checked against the same API surface at startup,
+  and anything matching nothing is logged with its source. A mistyped path in
+  `deny` or `exclude` was previously silent: stored, never matched, leaving a
+  resource reachable the operator believed was blocked. A lowercase method is
+  called out specifically, since HTTP methods are case-sensitive.
 
 ### Fixed
 - **`/containers/*/delete` was dead policy in the `default` profile.** Container

@@ -150,6 +150,21 @@ docker-socket-proxy
 
 Supported variables are `DOCKER_PROXY_ALLOW_ENDPOINTS`, `DOCKER_PROXY_INCLUDE_ENDPOINTS`, `DOCKER_PROXY_DENY_ENDPOINTS`, `DOCKER_PROXY_EXCLUDE_ENDPOINTS`, and corresponding `*_METHODS` variables. Environment rules are merged after file rules; exclusions remain decisive.
 
+### Typos
+
+Rules are checked against the Docker Engine API surface at startup, and anything matching no real endpoint is logged:
+
+```
+WARN policy endpoint matches no known Docker API path; it will never take effect
+     source="exclude" endpoint="/containres/*/logs" api_version="1.55"
+WARN policy method matches no request
+     source="include" method="get" hint="HTTP methods are case-sensitive, so this matches no request"
+```
+
+This matters most in `deny` and `exclude`: a mistyped path there is stored, never fires, and leaves a resource reachable that you believe you blocked.
+
+Warnings, not errors — the endpoint list is a snapshot, and a newer daemon may serve paths this build predates. Grep startup logs for `WARN` after a policy change.
+
 ### Drop-in Compatibility
 
 A compose file written for [Tecnativa's socket proxy](https://github.com/Tecnativa/docker-socket-proxy) runs here unchanged:

@@ -14,8 +14,10 @@ use std::fmt::Display;
 use std::path::Path;
 
 use serde::Deserialize;
+use tracing::warn;
 
 use crate::config::SecurityProfile;
+use crate::docker_api;
 use crate::error::ProxyError;
 use crate::security::SecurityFilter;
 
@@ -166,7 +168,9 @@ fn compatibility_filter(
     for (name, section) in COMPAT_SECTIONS {
         if granted(name) {
             // Both forms, because our patterns take a trailing `/` to mean
-            // prefix while a bare path is exact.
+            // prefix while a bare path is exact. Six sections have no bare
+            // endpoint, but the original prefix-matches and so accepts one;
+            // keeping it holds parity on a request the daemon would 404.
             endpoints.push((*section).to_owned());
             endpoints.push(format!("{section}/"));
         }
@@ -230,34 +234,76 @@ fn parse_document(path: &Path, contents: &str) -> Result<PolicyDocument, ProxyEr
 }
 
 fn apply_document(filter: &mut SecurityFilter, document: PolicyDocument) {
-    for set in [document.allow, document.include].into_iter().flatten() {
-        filter.allow_mut().extend(set.methods, set.endpoints);
+    for (name, set) in [("allow", document.allow), ("include", document.include)] {
+        if let Some(set) = set {
+            report_unknown(name, set.methods.as_deref(), set.endpoints.as_deref());
+            filter.allow_mut().extend(set.methods, set.endpoints);
+        }
     }
     if let Some(set) = document.deny {
+        report_unknown("deny", set.methods.as_deref(), set.endpoints.as_deref());
         filter.deny_mut().push(set.methods, set.endpoints);
     }
     if let Some(set) = document.exclude {
+        report_unknown("exclude", set.methods.as_deref(), set.endpoints.as_deref());
         filter.exclude_mut().push(set.methods, set.endpoints);
+    }
+}
+
+/// Warn about rule values that match nothing the Docker API serves.
+///
+/// A typo is silent otherwise: the rule is stored and simply never fires. In an
+/// `exclude` or `deny` rule that leaves a resource the operator believes is
+/// blocked reachable, which is the failure worth catching.
+///
+/// Warned rather than refused, because [`docker_api::PATHS`] is a snapshot and
+/// a newer daemon may serve endpoints this build predates.
+fn report_unknown(source: &str, methods: Option<&[String]>, endpoints: Option<&[String]>) {
+    for method in methods.unwrap_or_default() {
+        if docker_api::is_known_method(method) {
+            continue;
+        }
+        let hint = if docker_api::is_known_method(&method.to_ascii_uppercase()) {
+            "HTTP methods are case-sensitive, so this matches no request"
+        } else {
+            "not a method the Docker API uses"
+        };
+        warn!(source, method, hint, "policy method matches no request");
+    }
+
+    for endpoint in endpoints.unwrap_or_default() {
+        if !docker_api::matches_known_path(endpoint) {
+            warn!(
+                source,
+                endpoint,
+                api_version = docker_api::VERSION,
+                "policy endpoint matches no known Docker API path; it will never take effect"
+            );
+        }
     }
 }
 
 fn apply_environment(filter: &mut SecurityFilter, env: &HashMap<String, String>) {
     let list = |name: &str| env.get(name).map(|raw| split_list(raw));
+    let rule = |prefix: &str| {
+        let methods = list(&format!("DOCKER_PROXY_{prefix}_METHODS"));
+        let endpoints = list(&format!("DOCKER_PROXY_{prefix}_ENDPOINTS"));
+        report_unknown(
+            &format!("DOCKER_PROXY_{prefix}_*"),
+            methods.as_deref(),
+            endpoints.as_deref(),
+        );
+        (methods, endpoints)
+    };
 
     for prefix in ["ALLOW", "INCLUDE"] {
-        filter.allow_mut().extend(
-            list(&format!("DOCKER_PROXY_{prefix}_METHODS")),
-            list(&format!("DOCKER_PROXY_{prefix}_ENDPOINTS")),
-        );
+        let (methods, endpoints) = rule(prefix);
+        filter.allow_mut().extend(methods, endpoints);
     }
-    filter.deny_mut().push(
-        list("DOCKER_PROXY_DENY_METHODS"),
-        list("DOCKER_PROXY_DENY_ENDPOINTS"),
-    );
-    filter.exclude_mut().push(
-        list("DOCKER_PROXY_EXCLUDE_METHODS"),
-        list("DOCKER_PROXY_EXCLUDE_ENDPOINTS"),
-    );
+    let (methods, endpoints) = rule("DENY");
+    filter.deny_mut().push(methods, endpoints);
+    let (methods, endpoints) = rule("EXCLUDE");
+    filter.exclude_mut().push(methods, endpoints);
 }
 
 fn split_list(raw: &str) -> Vec<String> {
@@ -528,6 +574,40 @@ include:
             filter.check("POST", "/containers/create").is_err(),
             "read-only refuses writes whatever else is set"
         );
+    }
+
+    /// The warning is the whole point, so what counts as unknown is pinned
+    /// here; the emission itself is checked against a running proxy.
+    #[test]
+    fn typos_are_recognised_as_matching_nothing() {
+        assert!(!docker_api::matches_known_path("/containres/*/logs"));
+        assert!(!docker_api::is_known_method("GTE"));
+        assert!(!docker_api::is_known_method("get"));
+
+        assert!(docker_api::matches_known_path("/containers/*/logs"));
+        assert!(docker_api::matches_known_path("/exec/"));
+        assert!(docker_api::is_known_method("GET"));
+    }
+
+    /// Catches a mistyped section constant, which would otherwise grant nothing
+    /// while the variable still appears to work.
+    #[test]
+    fn every_section_variable_reaches_a_real_endpoint() {
+        for (name, section) in COMPAT_SECTIONS {
+            let reaches = docker_api::PATHS
+                .iter()
+                .any(|path| path.starts_with(&format!("{section}/")) || path == section);
+            assert!(
+                reaches,
+                "{name} grants {section}, which Docker does not serve"
+            );
+        }
+
+        for (name, paths) in COMPAT_OPERATIONS {
+            for path in *paths {
+                assert!(docker_api::matches_known_path(path), "{name}: {path}");
+            }
+        }
     }
 
     #[test]

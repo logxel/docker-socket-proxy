@@ -54,9 +54,14 @@ with SHA-pinned actions and `--locked`; releases carry an SBOM, max-mode
 provenance, and a signed SLSA attestation; OpenSSF Scorecard runs weekly;
 Dependabot covers cargo, actions, and docker.
 
-**Tests** — 75 passing (64 unit, 4 integration against a mock socket, 5
-asserting the shipped examples still behave as documented, 2 checking every
-shipped endpoint pattern against the real Docker Engine API surface).
+**Validation** — policy methods and endpoints are checked against the Docker
+Engine API surface (`src/docker_api.rs`) at startup; anything matching no real
+endpoint is warned about with its source, since a typo in `deny` or `exclude`
+is otherwise silent. Shipped patterns are checked by test, not warning.
+
+**Tests** — 78 passing (66 unit, 4 integration against a mock socket, 5
+asserting the shipped examples still behave as documented, 3 checking policy
+patterns against the real Docker Engine API surface).
 
 ## Known Gaps
 Ordered by the waves in [`docs/standards.md`](docs/standards.md#next-steps).
@@ -65,7 +70,7 @@ Identifiers are stable; closed gaps are not renumbered.
 | # | Gap | Location |
 |---|-----|----------|
 | 12 | No authentication of any kind on the listening port (OWASP API2) | `src/proxy.rs` |
-| 17 | Denied endpoints are not mapped to NIST SP 800-190 / CIS control IDs | `docs/` |
+| 17 | Denied endpoints are not mapped to NIST SP 800-190 / CIS control IDs | `docs/`, `src/docker_api.rs` |
 
 ## In Progress
 Nothing.
@@ -73,6 +78,13 @@ Nothing.
 ## Next Steps
 **Wave 3** (capability): gaps 11, 15, and 16 are closed. Remaining are 17, then 12.
 See [`docs/standards.md`](docs/standards.md#next-steps).
+
+Gap 17 now has a place to land: `src/docker_api.rs` enumerates the API surface,
+so control IDs can be attached per endpoint and held to it by the same test that
+rejects patterns matching nothing. What it still needs is the mapping itself,
+which must come from reading SP 800-190 and the CIS Docker Benchmark rather than
+from recall — a wrong control ID is worse than none, since it invites a
+compliance claim nobody checked.
 
 ## Blockers
 None.
