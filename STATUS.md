@@ -126,8 +126,8 @@ the metric is in [`docs/standards.md`](docs/standards.md#selection-criteria).
 | 2026-08-12 | Invalid allowlist file | Fatal | Falling back to profile defaults applied a policy the operator never wrote |
 | 2026-08-12 | Encoded path separators | Reject | RFC 3986 §2.2 makes `%2F` distinct from `/`; either reading could disagree with the daemon's |
 | 2026-08-12 | Container `USER` | None, documented | The socket is `root:docker 0660`, so a fixed UID fails on most hosts. Operators pass their own UID and docker GID |
-| 2026-08-13 | YAML parser | `serde-saphyr` | The only serde-native YAML crate that is pure Rust, 1.0, and maintained; panic-free, which the `panic = "abort"` profile requires |
-| 2026-08-13 | Section variables vs profiles | Replace, and refuse the combination | They describe a whole policy; merging them over a profile would grant more than the operator asked for |
-| 2026-08-13 | Empty default profile | No — added `none` instead | Default-deny is already satisfied by a curated allow list. Shipping a proxy that permits nothing pushes every operator to write a policy from scratch, and copied-in over-broad rules are the likelier outcome than a considered narrow one. `none` serves those who want it |
-| 2026-08-13 | Listen address | `--bind`, loopback default | The port has no authentication, so a network-reachable default hands over the daemon. The image overrides it, where exposure is already mediated by published ports |
-| 2026-08-13 | YAML as a feature | Optional, on by default | Costs 458 KiB and 10 crates. Default-on so a documented format cannot vanish with a build flag |
+| 2026-08-12 | YAML parser | `serde-saphyr` | The only serde-native YAML crate that is pure Rust, 1.0, and maintained; panic-free, which the `panic = "abort"` profile requires |
+| 2026-08-12 | Section variables vs profiles | Replace, and refuse the combination | They describe a whole policy; merging them over a profile would grant more than the operator asked for |
+| 2026-08-12 | Empty default profile | No — added `none` instead | Default-deny is already satisfied by a curated allow list. Shipping a proxy that permits nothing pushes every operator to write a policy from scratch, and copied-in over-broad rules are the likelier outcome than a considered narrow one. `none` serves those who want it |
+| 2026-08-12 | Listen address | `--bind`, loopback default | The port has no authentication, so a network-reachable default hands over the daemon. The image overrides it, where exposure is already mediated by published ports |
+| 2026-08-12 | YAML as a feature | Optional, on by default | Costs 458 KiB and 10 crates. Default-on so a documented format cannot vanish with a build flag |

@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] — 2026-08-12
+
+YAML allowlists, drop-in compatibility with the section variables other socket
+proxies use, and a listen address that is no longer reachable from the network
+by default. Four breaking changes are marked below.
+
 ### Added
 - **YAML allowlists.** `--allowlist` accepts `.yaml` and `.yml` alongside
   `.toml`, with the parser chosen by extension. An unrecognised extension is
@@ -30,10 +36,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`yaml` build feature**, on by default. `--no-default-features` drops the
   parser for a build 458 KiB and 10 crates smaller; a YAML allowlist given to
   such a build is refused by name rather than silently ignored.
-- **A `-minimal` image variant** published alongside the default one, built
-  without the YAML parser (1.88 MiB against 2.33 MiB). Both carry the same tags
-  with a `-minimal` suffix, and an `io.logxel.features` label so a
-  digest-pinned image still says which it is.
+- **Two image variants**, built in parallel from one Dockerfile. Bare tags and
+  `:latest` point at the minimal build (1.88 MiB), which is also reachable as
+  `-minimal` so a deployment can pin the feature set rather than inherit
+  whichever one is default. YAML is opt-in through `-yaml` (2.33 MiB). Both
+  carry an `io.logxel.features` label, since a tag suffix is invisible once an
+  image is pulled by digest. **Breaking** for anyone using a `.yaml` allowlist
+  with `:latest` or a bare version tag: move to `-yaml`, or the proxy refuses
+  the file by name and will not start.
 - Worked examples for create-body inspection, section-style YAML grants,
   environment-only configuration, and two compose deployments — each asserted by
   `tests/examples.rs`, so a shipped example cannot drift from what it documents.
@@ -62,7 +72,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   is now evaluated on its own. **Breaking** for any policy that relied on two
   sources intersecting.
 - **`read-only` now denies writes on every endpoint**, not only on the mutating
-  ones, so an `allow` rule added on top cannot reopen one.
+  ones, so an `allow` rule added on top cannot reopen one. **Breaking** for a
+  policy that layered a write allowance over this profile.
 
 ## [0.2.0] — 2026-08-12
 
@@ -169,7 +180,8 @@ below.
 ### Fixed
 - arm64 release image build.
 
-[Unreleased]: https://github.com/logxel/docker-socket-proxy/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/logxel/docker-socket-proxy/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/logxel/docker-socket-proxy/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/logxel/docker-socket-proxy/compare/v0.1.1...v0.2.0
 [0.1.1]: https://github.com/logxel/docker-socket-proxy/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/logxel/docker-socket-proxy/releases/tag/v0.1.0

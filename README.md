@@ -93,9 +93,9 @@ Both variants are published on every release. **The default image is the minimal
 
 | Tag | Allowlist formats | Image |
 |---|---|---|
-| `:0.2.0`, `:0.2`, `:0`, `:latest` | TOML | 1.88 MiB |
-| `:0.2.0-minimal`, `:0.2-minimal`, `:0-minimal`, `:latest-minimal` | TOML | 1.88 MiB |
-| `:0.2.0-yaml`, `:0.2-yaml`, `:0-yaml`, `:latest-yaml` | TOML, YAML | 2.33 MiB |
+| `:0.3.0`, `:0.3`, `:0`, `:latest` | TOML | 1.88 MiB |
+| `:0.3.0-minimal`, `:0.3-minimal`, `:0-minimal`, `:latest-minimal` | TOML | 1.88 MiB |
+| `:0.3.0-yaml`, `:0.3-yaml`, `:0-yaml`, `:latest-yaml` | TOML, YAML | 2.33 MiB |
 
 The first two rows are the same image; the `-minimal` tags exist so a deployment can pin the feature set rather than inherit whichever one is default.
 
@@ -172,7 +172,7 @@ A compose file written for [Tecnativa's socket proxy](https://github.com/Tecnati
 ```yaml
 services:
   proxy:
-    image: ghcr.io/logxel/docker-socket-proxy:0.2.0
+    image: ghcr.io/logxel/docker-socket-proxy:0.3.0
     environment:
       CONTAINERS: 1
       IMAGES: 1

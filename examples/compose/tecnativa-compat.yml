@@ -8,7 +8,7 @@
 
 services:
   docker-socket-proxy:
-    image: ghcr.io/logxel/docker-socket-proxy:0.2.0
+    image: ghcr.io/logxel/docker-socket-proxy:0.3.0
     environment:
       CONTAINERS: 1
       IMAGES: 1
