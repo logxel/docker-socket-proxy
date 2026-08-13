@@ -7,6 +7,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **Container-create body inspection now checks the nested `HostConfig`.** The
+  Docker daemon reads `Privileged`, `CapAdd`, `SecurityOpt`, `Devices`,
+  `PidMode`, `IpcMode`, and `UsernsMode` from `HostConfig`, but the guard only
+  inspected the top level, so `{"HostConfig":{"Privileged":true}}` slipped
+  through and started a privileged container. Both levels are now inspected,
+  `DeviceRequests` and `NetworkMode: host` are refused too, and explicit
+  `false`/empty/`null` no longer over-block.
+- **The `container-runtime` profile no longer cross-products methods ×
+  endpoints.** Its read and write grants merged into one set, silently allowing
+  every write method on every readable endpoint — including
+  `DELETE /volumes/{id}` and `DELETE /networks/{id}`. Allow rules are now
+  independent, so each grant stays method-AND-endpoint.
+- **Create-body inspection follows the effective policy, not the profile enum.**
+  `--profile none` plus an allowlist granting `POST /containers/create`, and the
+  `CONTAINERS=1 POST=1` compatibility shim, now inspect create bodies instead of
+  forwarding them unexamined.
+- **Malformed request paths return 400**, not 403, matching the documented
+  pipeline contract.
+- **Chunked over-limit bodies return 413**, not 502, when the streamed size
+  limit fires mid-forward.
+- **`--log-level` is no longer shadowed by an ambient `RUST_LOG`.**
+- **Upgraded (101) connections are drained on graceful shutdown**, so `docker
+  exec` sessions get a bounded window to finish instead of being severed.
+
+### Changed
+- **Merge semantics documented as a monotonic union-append under
+  `deny-overrides`**, not RFC 7386 JSON Merge Patch (which was documented but
+  never implemented).
+- **Release signing** writes a `.sigstore.json` Sigstore bundle via `cosign
+  sign-blob --bundle`, replacing the deprecated `--output-signature`/
+  `--output-certificate` flags that made the step fail.
+
 ## [0.3.0] — 2026-08-12
 
 YAML allowlists, drop-in compatibility with the section variables other socket

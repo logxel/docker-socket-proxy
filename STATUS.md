@@ -15,8 +15,16 @@ The remaining work is standards conformance, not features.
 `container-runtime`, and `none` profiles; wildcard matcher; TOML or YAML
 `allow`/`deny`/
 `include`/`exclude`; environment modifiers; API-version normalization;
-create-body inspection. `deny` and `exclude` hold independent rules, so
-separate sources cannot merge into one narrower condition.
+create-body inspection. `allow`, `deny`, and `exclude` all hold independent
+rules, so separate sources cannot merge into one narrower condition — or, on
+the allow side, one wider cross-product than any single source wrote.
+
+Container-create bodies are inspected at both the top level and under
+`HostConfig`, where the daemon actually reads `Privileged`, `CapAdd`,
+`SecurityOpt`, `Devices`, `DeviceRequests`, `PidMode`, `IpcMode`, and
+`UsernsMode`; `NetworkMode: host` is refused too. Inspection runs whenever the
+effective policy permits `POST /containers/create`, not only under
+`container-runtime`.
 
 **Compatibility** — the section variables Tecnativa's socket proxy uses
 (`CONTAINERS`, `POST`, `ALLOW_START`, …) configure the filter directly, checked
@@ -61,7 +69,7 @@ Engine API surface (`src/docker_api.rs`) at startup; anything matching no real
 endpoint is warned about with its source, since a typo in `deny` or `exclude`
 is otherwise silent. Shipped patterns are checked by test, not warning.
 
-**Tests** — 78 passing (66 unit, 4 integration against a mock socket, 5
+**Tests** — 87 passing (71 unit, 8 integration against a mock socket, 5
 asserting the shipped examples still behave as documented, 3 checking policy
 patterns against the real Docker Engine API surface).
 

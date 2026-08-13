@@ -60,6 +60,7 @@ const HOP_BY_HOP_HEADERS: [&str; 8] = [
 #[derive(Clone)]
 pub struct AppState {
     docker_socket: PathBuf,
+    upgrade_tasks: Arc<tokio::sync::Mutex<Vec<tokio::task::JoinHandle<()>>>>,
 }
 
 /// Collect the header names listed in `Connection`.
@@ -122,7 +123,9 @@ pub async fn serve(config: Config) -> Result<(), ProxyError> {
     let filter = PolicyLoader::new(config.allowlist.as_deref(), &config.profile).load()?;
     let state = AppState {
         docker_socket: config.socket.clone(),
+        upgrade_tasks: Arc::new(tokio::sync::Mutex::new(Vec::new())),
     };
+    let upgrade_tasks = Arc::clone(&state.upgrade_tasks);
     let metrics = Arc::new(Metrics::default());
 
     let router = build_router(
@@ -147,7 +150,10 @@ pub async fn serve(config: Config) -> Result<(), ProxyError> {
     axum::serve(listener, router)
         .with_graceful_shutdown(shutdown_signal())
         .await
-        .map_err(|e| ProxyError::Internal(e.to_string()))
+        .map_err(|e| ProxyError::Internal(e.to_string()))?;
+
+    drain_upgrades(&upgrade_tasks).await;
+    Ok(())
 }
 
 /// Create a router for integration testing.
@@ -157,6 +163,7 @@ pub fn test_router(docker_socket: PathBuf, security: SecurityFilter) -> Router {
     build_router(
         AppState {
             docker_socket: docker_socket.clone(),
+            upgrade_tasks: Arc::new(tokio::sync::Mutex::new(Vec::new())),
         },
         SecurityLayer::new(security, 1024 * 1024, Arc::clone(&metrics)),
         None,
@@ -219,6 +226,9 @@ async fn proxy_handler(
         .pool_max_idle_per_host(0)
         .build(UnixConnector);
     let resp = client.request(req).await.map_err(|e| {
+        if is_length_limit_error(&e) {
+            return ProxyError::TooLarge("request body exceeded the configured limit".into());
+        }
         tracing::error!(error = %e, path, "Docker upstream request failed");
         ProxyError::Docker(format!("forward failed: {e}"))
     })?;
@@ -234,13 +244,17 @@ async fn proxy_handler(
         if is_hop_by_hop(key.as_str(), &upstream_connection_headers) {
             continue;
         }
-        if let Ok(v) = value.to_str() {
-            response_builder = response_builder.header(key.as_str(), v);
-        }
+        response_builder = response_builder.header(key.as_str(), value.as_bytes());
     }
 
     if status == StatusCode::SWITCHING_PROTOCOLS {
-        return switch_protocols(response_builder, resp, client_upgrade);
+        return switch_protocols(
+            response_builder,
+            resp,
+            client_upgrade,
+            Arc::clone(&state.upgrade_tasks),
+        )
+        .await;
     }
 
     // Relayed frame by frame rather than collected: `/events` and follow-mode
@@ -248,6 +262,24 @@ async fn proxy_handler(
     response_builder
         .body(Body::new(resp.into_body()))
         .map_err(|e| ProxyError::Internal(format!("failed to build response: {e}")))
+}
+
+/// Whether a failed upstream send is the streamed body-size limit firing.
+///
+/// A `BodyRule::None` body is wrapped in [`http_body_util::Limited`] by the
+/// enforcement layer and streamed through, so an over-limit chunked body fails
+/// inside the hyper client as a nested [`http_body_util::LengthLimitError`]
+/// rather than as a 413 the middleware set itself.
+fn is_length_limit_error(mut err: &(dyn std::error::Error + 'static)) -> bool {
+    loop {
+        if err.is::<http_body_util::LengthLimitError>() {
+            return true;
+        }
+        match err.source() {
+            Some(source) => err = source,
+            None => return false,
+        }
+    }
 }
 
 /// The protocol a client offered to upgrade to.
@@ -268,10 +300,11 @@ fn requested_upgrade(
 ///
 /// The client half only becomes available once this response has been written,
 /// so the copy has to outlive the handler.
-fn switch_protocols(
+async fn switch_protocols(
     mut response_builder: axum::http::response::Builder,
     mut upstream: hyper::Response<hyper::body::Incoming>,
     client_upgrade: Option<OnUpgrade>,
+    upgrade_tasks: Arc<tokio::sync::Mutex<Vec<tokio::task::JoinHandle<()>>>>,
 ) -> Result<Response, ProxyError> {
     let client_upgrade = client_upgrade.ok_or_else(|| {
         ProxyError::Docker("upstream switched protocols without a client offer".into())
@@ -284,7 +317,9 @@ fn switch_protocols(
     }
     let upstream_upgrade = hyper::upgrade::on(&mut upstream);
 
-    tokio::spawn(async move {
+    // Tracked so graceful shutdown can drain (then bound) live exec/attach
+    // sessions instead of severing them when the runtime is dropped.
+    let handle = tokio::spawn(async move {
         let (client, upstream) = match tokio::try_join!(client_upgrade, upstream_upgrade) {
             Ok(pair) => pair,
             Err(e) => {
@@ -299,10 +334,28 @@ fn switch_protocols(
             tracing::debug!(error = %e, "upgraded connection ended");
         }
     });
+    upgrade_tasks.lock().await.push(handle);
 
     response_builder
         .body(Body::empty())
         .map_err(|e| ProxyError::Internal(format!("failed to build response: {e}")))
+}
+
+/// Let in-flight upgraded (101) connections finish, then abort any that outstay
+/// a bounded drain so `docker stop` still terminates.
+async fn drain_upgrades(tasks: &tokio::sync::Mutex<Vec<tokio::task::JoinHandle<()>>>) {
+    const DRAIN_TIMEOUT: Duration = Duration::from_secs(5);
+
+    let handles = std::mem::take(&mut *tasks.lock().await);
+    if handles.is_empty() {
+        return;
+    }
+    info!(count = handles.len(), "draining upgraded connections");
+    for handle in handles {
+        if tokio::time::timeout(DRAIN_TIMEOUT, handle).await.is_err() {
+            tracing::debug!("upgraded connection outlasted the drain window");
+        }
+    }
 }
 
 /// Wait for a shutdown signal (SIGTERM or SIGINT).

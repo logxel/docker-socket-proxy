@@ -109,7 +109,7 @@ Precedence is **`deny-overrides`** (XACML terminology), evaluated in a fixed ord
 Container creation, exec, lifecycle mutation, `/build`, `/commit`, and everything not listed above.
 
 ### Body inspection
-For profiles that permit `/containers/create`, the request body is inspected and rejected if it sets `Privileged`, `CapAdd`, `SecurityOpt`, `Devices`, `PidMode`, `IpcMode`, or `UsernsMode`. Bind and volume mounts are permitted — orchestrators legitimately need them, and the profile is documented as trusted-caller-only.
+For profiles that permit `/containers/create`, the request body is inspected and rejected if it sets `Privileged`, `CapAdd`, `SecurityOpt`, `Devices`, `DeviceRequests`, `PidMode`, `IpcMode`, or `UsernsMode` — at the top level or nested under `HostConfig` — or sets `NetworkMode` to `host`. Docker reads these fields from `HostConfig`, so both levels are inspected. Bind and volume mounts are permitted — orchestrators legitimately need them, and the profile is documented as trusted-caller-only.
 
 ### Profiles
 | Profile | Intent |
@@ -135,7 +135,7 @@ Each blocked endpoint is mapped to its NIST SP 800-190 and CIS Docker Benchmark 
 
 - Structured JSON logs via `tracing`, named per **OpenTelemetry semantic conventions**
 - **W3C Trace Context** — an inbound `traceparent` is propagated upstream
-- `/metrics` in **OpenMetrics/Prometheus** text format: allow and deny counters by endpoint and profile, plus request latency
+- `/metrics` in **OpenMetrics/Prometheus** text format: allow and deny counters
 - Health endpoint, reachable from a `--health-check` subcommand since the scratch image has no shell
 
 ## Configuration
@@ -164,7 +164,7 @@ endpoints = ["/containers/create", "/exec"]
 methods = ["POST"]
 ```
 
-Merge semantics follow **RFC 7386** (JSON Merge Patch) rather than ad-hoc precedence.
+Merge is a monotonic union-append over the profile defaults: `allow`/`include` add grants and `deny`/`exclude` carve them out under `deny-overrides`. A file or environment rule can only add to `allow` — use `deny`/`exclude` to subtract.
 
 ### Compatibility
 A shim accepts the Tecnativa/linuxserver `docker-socket-proxy` environment variables (`CONTAINERS=1`, `IMAGES=1`, `POST=0`, …) and translates them into endpoint patterns, making this a drop-in replacement for the incumbent.

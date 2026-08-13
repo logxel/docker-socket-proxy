@@ -30,6 +30,10 @@ pub enum ProxyError {
     #[error("access denied: {0}")]
     Forbidden(String),
 
+    /// Request could not be parsed, as opposed to refused by policy.
+    #[error("bad request: {0}")]
+    BadRequest(String),
+
     /// Request body exceeded the configured limit.
     #[error("payload too large: {0}")]
     TooLarge(String),
@@ -48,9 +52,10 @@ impl IntoResponse for ProxyError {
         let (status, message) = match &self {
             ProxyError::Config(msg) => (StatusCode::BAD_REQUEST, msg.clone()),
             ProxyError::Forbidden(msg) => (StatusCode::FORBIDDEN, msg.clone()),
+            ProxyError::BadRequest(msg) => (StatusCode::BAD_REQUEST, msg.clone()),
             ProxyError::TooLarge(msg) => (StatusCode::PAYLOAD_TOO_LARGE, msg.clone()),
             ProxyError::Docker(msg) => (StatusCode::BAD_GATEWAY, msg.clone()),
-            ProxyError::Internal(_) => (StatusCode::INTERNAL_SERVER_ERROR, self.to_string()),
+            ProxyError::Internal(msg) => (StatusCode::INTERNAL_SERVER_ERROR, msg.clone()),
         };
 
         let body = json!({ "message": message });
@@ -95,5 +100,19 @@ mod tests {
             body_of(ProxyError::Internal("boom".into())).await.0,
             StatusCode::INTERNAL_SERVER_ERROR
         );
+    }
+
+    #[tokio::test]
+    async fn bad_request_maps_to_400() {
+        assert_eq!(
+            body_of(ProxyError::BadRequest("garbage".into())).await.0,
+            StatusCode::BAD_REQUEST
+        );
+    }
+
+    #[tokio::test]
+    async fn internal_error_body_carries_only_the_message() {
+        let (_, body) = body_of(ProxyError::Internal("boom".into())).await;
+        assert_eq!(body["message"], "boom");
     }
 }

@@ -43,8 +43,10 @@ fn main() {
 }
 
 fn init_logging(config: &docker_socket_proxy::config::Config) {
-    let env_filter =
-        EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(&config.log_level));
+    // `log_level` already reflects `RUST_LOG` via clap's `env` binding (with the
+    // CLI winning), so reading the environment again here would shadow an
+    // explicit `--log-level`.
+    let env_filter = EnvFilter::new(&config.log_level);
 
     match config.log_format {
         docker_socket_proxy::config::LogFormat::Json => {

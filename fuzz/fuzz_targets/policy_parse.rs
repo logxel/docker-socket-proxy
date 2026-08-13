@@ -24,10 +24,10 @@ fuzz_target!(|data: &[u8]| {
 
     // Mirror PolicyLoader::apply_document, but through the public surface only.
     if let Some(set) = document.allow {
-        filter.allow_mut().extend(set.methods, set.endpoints);
+        filter.allow_mut().push(set.methods, set.endpoints);
     }
     if let Some(set) = document.include {
-        filter.allow_mut().extend(set.methods, set.endpoints);
+        filter.allow_mut().push(set.methods, set.endpoints);
     }
     if let Some(set) = document.deny {
         filter.deny_mut().push(set.methods, set.endpoints);

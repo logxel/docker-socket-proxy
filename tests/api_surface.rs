@@ -45,6 +45,7 @@ fn every_shipped_pattern_matches_a_real_endpoint() {
 #[test]
 fn the_matcher_distinguishes_real_endpoints_from_invented_ones() {
     assert!(docker_api::matches_known_path("/containers/*/json"));
+    assert!(docker_api::matches_known_path("/containers/abc/json"));
     assert!(docker_api::matches_known_path("/containers/"));
     assert!(docker_api::matches_known_path("/_ping"));
     assert!(!docker_api::matches_known_path("/containers/*/delete"));

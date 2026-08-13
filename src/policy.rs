@@ -189,7 +189,7 @@ fn compatibility_filter(
     };
 
     let mut filter = SecurityFilter::deny_all();
-    filter.allow_mut().extend(Some(methods), Some(endpoints));
+    filter.allow_mut().push(Some(methods), Some(endpoints));
     Ok(Some(filter))
 }
 
@@ -237,7 +237,7 @@ fn apply_document(filter: &mut SecurityFilter, document: PolicyDocument) {
     for (name, set) in [("allow", document.allow), ("include", document.include)] {
         if let Some(set) = set {
             report_unknown(name, set.methods.as_deref(), set.endpoints.as_deref());
-            filter.allow_mut().extend(set.methods, set.endpoints);
+            filter.allow_mut().push(set.methods, set.endpoints);
         }
     }
     if let Some(set) = document.deny {
@@ -298,7 +298,7 @@ fn apply_environment(filter: &mut SecurityFilter, env: &HashMap<String, String>)
 
     for prefix in ["ALLOW", "INCLUDE"] {
         let (methods, endpoints) = rule(prefix);
-        filter.allow_mut().extend(methods, endpoints);
+        filter.allow_mut().push(methods, endpoints);
     }
     let (methods, endpoints) = rule("DENY");
     filter.deny_mut().push(methods, endpoints);
@@ -345,6 +345,24 @@ methods = []
         assert!(filter.check("GET", "/_ping").is_ok());
         assert!(filter.check("GET", "/containers/json").is_ok());
         assert!(filter.check("GET", "/info").is_ok());
+    }
+
+    #[test]
+    fn a_file_allow_stays_independent_of_the_profile_allow() {
+        let filter = from_toml(
+            r#"
+[allow]
+methods = ["POST"]
+endpoints = ["/images/create"]
+"#,
+            &SecurityProfile::Default,
+        );
+
+        assert!(filter.check("POST", "/images/create").is_ok());
+        assert!(
+            filter.check("POST", "/info").is_err(),
+            "the file's POST must not leak onto the profile's endpoints"
+        );
     }
 
     #[test]

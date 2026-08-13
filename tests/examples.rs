@@ -107,12 +107,18 @@ fn create_inspection_example_rejects_the_bodies_it_documents() {
     let create = |body: &str| filter.check_request("POST", "/containers/create", body.as_bytes());
 
     assert!(create(r#"{"Image":"worker:1","Cmd":["run"]}"#).is_ok());
+    assert!(
+        create(r#"{"Image":"worker:1"}"#).is_ok(),
+        "the image's default Cmd is legitimate"
+    );
 
     for body in [
-        r#"{"Image":"x","Cmd":[],"Privileged":true}"#,
-        r#"{"Image":"x","Cmd":[],"CapAdd":["SYS_ADMIN"]}"#,
-        r#"{"Image":"x","Cmd":[],"PidMode":"host"}"#,
-        r#"{"Image":"x"}"#,
+        r#"{"Image":"x","HostConfig":{"Privileged":true}}"#,
+        r#"{"Image":"x","HostConfig":{"CapAdd":["SYS_ADMIN"]}}"#,
+        r#"{"Image":"x","HostConfig":{"PidMode":"host"}}"#,
+        r#"{"Image":"x","HostConfig":{"DeviceRequests":[{"Driver":"nvidia","Count":1}]}}"#,
+        r#"{"Image":"x","NetworkMode":"host"}"#,
+        r#"{}"#,
     ] {
         assert!(create(body).is_err(), "{body}");
     }
