@@ -8,11 +8,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
-- **`container-runtime` now allows graceful container stop.** The profile
-  claimed to support `DockerRunLauncher` lifecycle calls, but
+- **`container-runtime` now allows graceful container stop and restart.** The
+  profile claimed to support `DockerRunLauncher` lifecycle calls, but
   `POST /containers/{id}/stop` was still denied, so `DockerRunLauncher.terminate()`
-  could not cancel runs. Stop is now granted; kill, restart, pause, unpause,
-  rename, update, resize, attach, and commit remain denied.
+  could not cancel runs. Stop and restart (stop+start) are now granted; kill,
+  pause, unpause, rename, update, resize, attach, and commit remain denied.
 
 ## [0.3.1] — 2026-08-13
 

@@ -142,6 +142,7 @@ const RUNTIME_ENDPOINTS: &[&str] = &[
     "/containers/create",
     "/containers/*/start",
     "/containers/*/stop",
+    "/containers/*/restart",
     "/containers/*/exec",
     "/containers/*/wait",
     "/containers/*/archive",
@@ -227,6 +228,7 @@ impl SecurityFilter {
                         "/containers/create"
                             | "/containers/*/start"
                             | "/containers/*/stop"
+                            | "/containers/*/restart"
                             | "/containers/*/exec"
                             | "/containers/*/wait"
                             | "/containers/*"
@@ -648,13 +650,14 @@ mod tests {
         assert!(f.check("DELETE", "/containers/abc").is_ok());
         // POST /containers/{id}/stop is the DockerRunLauncher terminate path.
         assert!(f.check("POST", "/containers/abc/stop").is_ok());
+        // restart is stop+start, within the launcher lifecycle.
+        assert!(f.check("POST", "/containers/abc/restart").is_ok());
     }
 
     #[test]
     fn container_runtime_profile_keeps_destructive_ops_denied() {
         let f = SecurityFilter::for_profile(&SecurityProfile::ContainerRuntime);
         for (method, path) in [
-            ("POST", "/containers/abc/restart"),
             ("POST", "/containers/abc/kill"),
             ("POST", "/containers/abc/pause"),
             ("POST", "/containers/abc/unpause"),
@@ -669,7 +672,9 @@ mod tests {
                 "{method} {path} stays denied for container-runtime"
             );
         }
+        // stop and restart (stop+start) are granted for orchestrator lifecycle.
         assert!(f.check("POST", "/containers/abc/stop").is_ok());
+        assert!(f.check("POST", "/containers/abc/restart").is_ok());
     }
 
     #[test]
