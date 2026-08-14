@@ -141,6 +141,7 @@ const MUTATING_ENDPOINTS: &[&str] = &[
 const RUNTIME_ENDPOINTS: &[&str] = &[
     "/containers/create",
     "/containers/*/start",
+    "/containers/*/stop",
     "/containers/*/exec",
     "/containers/*/wait",
     "/containers/*/archive",
@@ -225,6 +226,7 @@ impl SecurityFilter {
                         endpoint.as_str(),
                         "/containers/create"
                             | "/containers/*/start"
+                            | "/containers/*/stop"
                             | "/containers/*/exec"
                             | "/containers/*/wait"
                             | "/containers/*"
@@ -644,6 +646,30 @@ mod tests {
         assert!(f.check("POST", "/images/load").is_ok());
         assert!(f.check("POST", "/containers/abc/wait").is_ok());
         assert!(f.check("DELETE", "/containers/abc").is_ok());
+        // POST /containers/{id}/stop is the DockerRunLauncher terminate path.
+        assert!(f.check("POST", "/containers/abc/stop").is_ok());
+    }
+
+    #[test]
+    fn container_runtime_profile_keeps_destructive_ops_denied() {
+        let f = SecurityFilter::for_profile(&SecurityProfile::ContainerRuntime);
+        for (method, path) in [
+            ("POST", "/containers/abc/restart"),
+            ("POST", "/containers/abc/kill"),
+            ("POST", "/containers/abc/pause"),
+            ("POST", "/containers/abc/unpause"),
+            ("POST", "/containers/abc/rename"),
+            ("POST", "/containers/abc/update"),
+            ("POST", "/containers/abc/resize"),
+            ("POST", "/containers/abc/attach"),
+            ("POST", "/commit"),
+        ] {
+            assert!(
+                f.check(method, path).is_err(),
+                "{method} {path} stays denied for container-runtime"
+            );
+        }
+        assert!(f.check("POST", "/containers/abc/stop").is_ok());
     }
 
     #[test]

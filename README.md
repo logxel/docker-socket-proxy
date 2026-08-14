@@ -73,7 +73,7 @@ the host.
 |---|---|
 | `default` | Read-only endpoints on GET and HEAD; mutation blocked |
 | `read-only` | The same reads, with every write method denied on every endpoint |
-| `container-runtime` | Launching and managing containers, with create bodies inspected |
+| `container-runtime` | Launching and managing containers, with create bodies inspected (graceful stop included) |
 | `none` | Nothing — your allowlist is the whole policy |
 
 `read-only` is a standard descriptive name for Docker API consumers that need inspection only. `container-runtime` is the generic profile for trusted workload orchestrators such as Dagster's official `DockerRunLauncher`.
@@ -215,7 +215,7 @@ This proxy **reduces** the blast radius of socket exposure. It does not eliminat
 
 ### Container Runtime Profile
 
-Use the opt-in `container-runtime` profile for Docker-backed orchestrators. It supports `DockerRunLauncher` lifecycle calls, custom containers, image builds and loads, bind/volume mounts, network connections, `docker exec`, and wait/log/archive operations. Privileged mode, capability changes, host devices, and namespace overrides remain blocked.
+Use the opt-in `container-runtime` profile for Docker-backed orchestrators. It supports `DockerRunLauncher` lifecycle calls, custom containers, image builds and loads, bind/volume mounts, network connections, `docker exec`, and wait/log/archive operations. Graceful termination (`POST /containers/{id}/stop`) is included so `DockerRunLauncher` cancel/terminate works; kill, restart, and pause remain denied. Privileged mode, capability changes, host devices, and namespace overrides remain blocked.
 
 ```bash
 DOCKER_PROXY_PROFILE=container-runtime docker-socket-proxy
