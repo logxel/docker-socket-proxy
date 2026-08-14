@@ -5,6 +5,15 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+- **`container-runtime` now allows graceful container stop and restart.** The
+  profile claimed to support `DockerRunLauncher` lifecycle calls, but
+  `POST /containers/{id}/stop` was still denied, so `DockerRunLauncher.terminate()`
+  could not cancel runs. Stop and restart (stop+start) are now granted; kill,
+  pause, unpause, rename, update, resize, attach, and commit remain denied.
+
 ## [0.3.1] — 2026-08-13
 
 Security and correctness fixes from a full code review, plus a repaired
