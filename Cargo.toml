@@ -21,7 +21,7 @@ thiserror = "2"
 tower = { version = "0.5", default-features = false }
 tower-http = { version = "0.7", default-features = false, features = ["timeout"] }
 toml = "1.1"
-serde-saphyr = { version = "1.0", optional = true }
+serde-saphyr = { version = "2.0", optional = true }
 http-body-util = "0.1"
 
 [features]
@@ -32,7 +32,7 @@ yaml = ["dep:serde-saphyr"]
 
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }
-serde-saphyr = "1.0"
+serde-saphyr = "2.0"
 # join_all needs only std/alloc, not the async-await macros; scoped so the
 # dev tree adds no new crates over what axum/hyper-util/tower already pull.
 futures-util = { version = "0.3", default-features = false, features = ["std"] }
