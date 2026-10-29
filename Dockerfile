@@ -1,6 +1,6 @@
 # Build stage — cross-compile static musl binary
 # Pinned by digest so the build is reproducible; Dependabot raises the bump.
-FROM rust:alpine@sha256:3c38f3f82c2f3d73da3b38e18d279393a04cb43ddded0e35088a8c3324d40900 AS builder
+FROM rust:alpine@sha256:b1d5dd5a22a09404d3e798c0cf051b689077360374eb505fa5bb93c479693d87 AS builder
 
 ARG TARGETARCH
 
